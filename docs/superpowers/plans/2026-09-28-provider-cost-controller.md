@@ -454,6 +454,12 @@ git commit -m "feat: opencode adapter"
 **Interfaces:**
 - Produces: `Tools.hermes(_ paths: ToolPaths) -> ToolAdapter`.
 
+**Required refactor — do this before adding the hermes adapter.** `detectPi` and `detectOpencode` in `Sources/Tools.swift` are verbatim copies of each other, doc comment and `PATH` split loop included, and this task and Task 7 would each add another copy — four near-identical functions, so one bug fix would need four edits. Extract a single shared helper first:
+
+`private func isExecutableOnPath(_ name: String) -> Bool`
+
+which performs the `PATH` split and the `isExecutableFile` test, and make every `detect*` function read `fileExists(path) || isExecutableOnPath("<tool>")`. Update `detectPi` and `detectOpencode` to use it as part of this task. Do not change any adapter's observable behaviour: file existence stays the primary signal, because a Finder-launched app gets a minimal `PATH` and the binary lookup can miss an installed tool. The existing per-adapter detection checks are what prove behaviour is unchanged; no new check is required for the helper itself.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
