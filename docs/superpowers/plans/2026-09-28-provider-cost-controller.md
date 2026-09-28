@@ -1004,8 +1004,11 @@ Expected: launches, balance correct, tools listed.
 
 - [ ] **Step 3: Verify no secrets leaked into the repo**
 
-Run: `git grep -nE "sk-or-v1|apiKey" -- . ':!Tests/fixtures'`
-Expected: no real key, and no key material in any committed fixture.
+Run: `git grep -nE "sk-or-v1-[0-9a-fA-F]{32,}" -- .`
+
+Expected: **no matches.** A real OpenRouter key is `sk-or-v1-` followed by a long hex string, so that pattern catches a genuine leak and essentially nothing else.
+
+Do **not** use a looser pattern such as `sk-or-v1|apiKey`. Both alternatives match strings that are legitimately committed: the placeholder `sk-or-v1-selftest-fixture-not-a-real-key` is the expected value of the key-import check in `Sources/SelfTest.swift`, and it appears several times in this plan document as the mandated fixture content. A loose grep reports matches, and "fixing" them would mean deleting the check's expected value — turning a real assertion into a vacuous one, which is a far worse outcome than the false positive. If you do run a looser pattern, account for every match and confirm each is the placeholder rather than removing it.
 
 - [ ] **Step 4: Commit**
 
