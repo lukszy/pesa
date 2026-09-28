@@ -108,8 +108,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // Dispatch before touching NSApplication so --selftest runs in a plain terminal.
+// Top-level code runs on the main thread; `assumeIsolated` states that so the
+// main-actor `SelfTest.run()` (it exercises `CatalogCache`) can be called.
 if CommandLine.arguments.contains("--selftest") {
-    exit(SelfTest.run())
+    exit(MainActor.assumeIsolated { SelfTest.run() })
 }
 if CommandLine.arguments.contains("--probe") {
     exit(runProbe())

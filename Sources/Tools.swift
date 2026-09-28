@@ -1,7 +1,7 @@
 import Foundation
 
 /// One coding agent's adapter surface. Every member is a closure supplied by a
-/// `Tools.*` factory, so Tasks 5–7 can add adapters by building another value
+/// `Tools.*` factory, so an adapter is built by assembling another value
 /// without touching this shape.
 struct ToolAdapter {
     let id: String
@@ -9,7 +9,10 @@ struct ToolAdapter {
     let detect: () -> Bool
     let currentModel: () throws -> ToolModelRef?
     let providers: () throws -> [String]
-    let models: (_ provider: String) throws -> [(id: String, name: String)]
+    /// `@MainActor` because the model list merges in `CatalogCache`, whose
+    /// entries are main-actor state. Callers reach the catalog from `AppState`
+    /// on the main actor; an off-main caller is a compile error, not a race.
+    let models: @MainActor (_ provider: String) throws -> [(id: String, name: String)]
     let setModel: (_ ref: ToolModelRef) throws -> Void
 
     /// The row state the UI renders from. `.missing` when the tool is not
@@ -36,6 +39,7 @@ enum ToolState: Equatable {
 /// cannot `await`, so the async fetch lands here and they read it as plain
 /// state. Empty until the first successful fetch; a failed fetch leaves it as
 /// it was, so the picker falls back to each tool's own configured models.
+@MainActor
 enum CatalogCache {
     static var entries: [(id: String, name: String)] = []
 
@@ -279,9 +283,15 @@ private func clawdbotModelEntries(binary: String?) throws -> [[String: Any]] {
 }
 
 /// Launches the resolved clawdbot binary. stderr goes to the null device so a
-/// warning cannot fill a pipe or fail a read. Throws only when the binary
-/// cannot be launched at all; a non-zero exit is returned to the caller.
-private func runClawdbot(_ binary: String, _ arguments: [String]) throws -> (stdout: String, status: Int32) {
+/// warning cannot fill a pipe or fail a read. Throws when the binary cannot be
+/// launched at all, or when it outlives `timeout`; a non-zero exit is returned
+/// to the caller.
+///
+/// The read and the wait both happen off the caller's thread. The CLI is reached
+/// from the config `didSet`, so a hung process on the main thread would freeze
+/// the UI; a wall-clock deadline turns that hang into a reported error.
+private func runClawdbot(_ binary: String, _ arguments: [String],
+                         timeout: TimeInterval = 5) throws -> (stdout: String, status: Int32) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
     process.arguments = arguments
@@ -293,9 +303,28 @@ private func runClawdbot(_ binary: String, _ arguments: [String]) throws -> (std
     } catch {
         throw ConfigError.write(binary, "could not launch clawdbot: \(error)")
     }
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    return (String(data: data, encoding: .utf8) ?? "", process.terminationStatus)
+
+    let finished = DispatchSemaphore(value: 0)
+    var stdout = Data()
+    var status: Int32 = 0
+    DispatchQueue.global(qos: .utility).async {
+        // Reading to EOF blocks until the child exits, so the deadline cannot
+        // be enforced by `waitUntilExit` alone; both run here and the caller
+        // terminates the process on the deadline.
+        stdout = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        status = process.terminationStatus
+        finished.signal()
+    }
+    guard finished.wait(timeout: .now() + timeout) == .success else {
+        process.terminate()
+        if finished.wait(timeout: .now() + 2) == .timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            _ = finished.wait(timeout: .now() + 2)
+        }
+        throw ConfigError.write(binary, "clawdbot did not finish within \(Int(timeout))s; terminated")
+    }
+    return (String(data: stdout, encoding: .utf8) ?? "", status)
 }
 
 // MARK: - opencode
@@ -327,8 +356,8 @@ private func opencodeProviders(_ paths: ToolPaths) throws -> [String] {
 }
 
 /// The model ids already configured for the provider. opencode takes free-text
-/// model ids, so an unconfigured provider legitimately yields an empty list.
-/// Task 11 injects the hosted catalog later.
+/// model ids, so an unconfigured provider legitimately yields an empty list; the
+/// OpenRouter catalog is merged in by `CatalogCache` when it has been fetched.
 private func opencodeModels(_ paths: ToolPaths, provider: String) throws -> [(id: String, name: String)] {
     guard let config = try jsonObject(paths.opencodeConfig),
           let providers = config["provider"] as? [String: Any],
@@ -375,8 +404,9 @@ private func hermesProviders(_ paths: ToolPaths) throws -> [String] {
 }
 
 /// The model ids already configured for the provider. Hermes keeps no local
-/// model catalog (Task 11 injects the hosted one); the configured `model:`
-/// scalar is the one local entry and belongs only to its own provider.
+/// model catalog; the OpenRouter catalog is merged in by `CatalogCache` when it
+/// has been fetched. The configured `model:` scalar is the one local entry and
+/// belongs only to its own provider.
 private func hermesModels(_ paths: ToolPaths, provider: String) throws -> [(id: String, name: String)] {
     guard let current = try currentHermesModel(paths), current.provider == provider else { return [] }
     return [(id: current.model, name: current.model)]

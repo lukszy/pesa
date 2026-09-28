@@ -1,10 +1,12 @@
+import AppKit
 import Foundation
 import ServiceManagement
 import SwiftUI
 import UserNotifications
 
 /// What the menu bar status item renders. Pure, so the behaviour a user would
-/// otherwise have to observe by eye is testable. Task 12 renders the result.
+/// otherwise have to observe by eye is testable. `StatusItemController` renders
+/// the result.
 enum MenuBarPresentation {
     static func of(showMoney: Bool, showIcon: Bool, balance: Double?, error: Bool)
         -> (text: String?, symbol: String?) {
@@ -44,6 +46,18 @@ enum BalanceAlert {
     }
 }
 
+/// Which config edits require rebuilding the tool rows. Only the fields that
+/// feed a row — the hidden set and the clawdbot binary override — may rebuild:
+/// `adapter.state()` can spawn a CLI, so rebuilding on an interval, threshold,
+/// toggle, or launch-at-login edit freezes the UI per keystroke. Pure, so the
+/// decision is testable without an `AppState` or a real tool install.
+enum ConfigChange {
+    static func affectsRows(from old: AppConfig, to new: AppConfig) -> Bool {
+        old.hiddenTools != new.hiddenTools
+            || old.binaryPathOverrides != new.binaryPathOverrides
+    }
+}
+
 /// The UI projection of one detected adapter. `writable` is false when the
 /// adapter cannot perform a write — clawdbot without a binary — or when its
 /// config could not be read, in which case its Change control is disabled and
@@ -71,12 +85,21 @@ final class AppState: ObservableObject {
     @Published var rows: [ToolRow] = []
 
     /// Persisted user settings. `didSet` writes them through and re-arms the
-    /// refresh timer, so the UI binds directly and every change is saved.
+    /// refresh timer, so the UI binds directly and every change is saved. Rows
+    /// are rebuilt only when a field that feeds a row changed: `adapter.state()`
+    /// can spawn a CLI, and rebuilding on every keystroke in the interval,
+    /// threshold, or toggle fields would freeze the UI.
     @Published var config: AppConfig {
         didSet {
-            try? config.save()
+            do {
+                try config.save()
+            } catch {
+                errorText = "Could not save settings: \(describe(error))"
+            }
             startRefreshTimer()
-            rebuildRows()
+            if ConfigChange.affectsRows(from: oldValue, to: config) {
+                rebuildRows()
+            }
         }
     }
 
@@ -93,6 +116,7 @@ final class AppState: ObservableObject {
     private var providerCache: [String: [String]] = [:]
     private var previousBalance: Double?
     private var refreshTimer: Timer?
+    private var isRefreshing = false
 
     init(paths: ToolPaths = .real) {
         self.paths = paths
@@ -126,6 +150,13 @@ final class AppState: ObservableObject {
     /// fetch must never fail the refresh: the picker simply keeps each tool's
     /// own configured models.
     func refresh() async {
+        // A refresh can be re-entered at its awaits by the timer and the Refresh
+        // button overlapping. Serializing here keeps `previousBalance` read and
+        // written as one step, so a crossing is never double-posted or dropped.
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
         if let catalog = try? await OpenRouter.models() {
             CatalogCache.entries = catalog
         }
@@ -580,6 +611,8 @@ struct PopoverView: View {
             launchAtLoginSection
             Divider()
             overridesSection
+            Divider()
+            Button("Quit") { NSApp.terminate(nil) }
         }
         .padding(.top, 6)
     }
@@ -652,21 +685,25 @@ struct PopoverView: View {
         }
     }
 
+    /// Only clawdbot runs a binary; the other three adapters read their config
+    /// files directly, so only clawdbot's override is honoured by
+    /// `AppState.effectivePaths`. Rendering a field for the others would accept a
+    /// path and silently ignore it.
     private var overridesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Tool path overrides").font(.headline)
-            Text("Point a tool at a non-standard binary location.")
+            Text("Point clawdbot at a non-standard binary location. The other tools read their config files directly, so they have no binary path to override.")
                 .font(.caption).foregroundStyle(.secondary)
-            ForEach(state.rows, id: \.id) { row in
+            if let row = state.rows.first(where: { $0.id == "clawdbot" }) {
                 HStack {
                     Text(row.displayName).frame(width: 70, alignment: .leading)
                     TextField("binary path", text: Binding(
-                        get: { state.config.binaryPathOverrides[row.id] ?? "" },
+                        get: { state.config.binaryPathOverrides["clawdbot"] ?? "" },
                         set: { newValue in
                             if newValue.isEmpty {
-                                state.config.binaryPathOverrides.removeValue(forKey: row.id)
+                                state.config.binaryPathOverrides.removeValue(forKey: "clawdbot")
                             } else {
-                                state.config.binaryPathOverrides[row.id] = newValue
+                                state.config.binaryPathOverrides["clawdbot"] = newValue
                             }
                         }))
                 }

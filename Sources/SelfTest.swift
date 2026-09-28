@@ -15,6 +15,9 @@ enum SelfTest {
         print(passed ? "PASS \(name)" : "FAIL \(name)")
     }
 
+    /// `@MainActor`: the adapter checks read the main-actor `CatalogCache`'s
+    /// model-merge path, exactly as the app does.
+    @MainActor
     static func run() -> Int32 {
         results = []
         // Durable, non-vacuous canary: fails if countFailures regresses.
@@ -125,7 +128,8 @@ enum SelfTest {
 
     /// Exercises the pi adapter against a staged temp copy of Tests/fixtures.
     /// Never touches a real user path. Throwing calls are hoisted out of
-    /// `check`'s non-throwing autoclosure exactly as the Task 3 checks do.
+    /// `check`'s non-throwing autoclosure exactly as the other checks do.
+    @MainActor
     private static func checkPiAdapter() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
@@ -184,6 +188,7 @@ enum SelfTest {
 
     /// Exercises the opencode adapter against a staged temp copy of
     /// Tests/fixtures. Never touches a real user path.
+    @MainActor
     private static func checkOpencodeAdapter() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
@@ -222,6 +227,7 @@ enum SelfTest {
     /// Exercises the hermes adapter against a staged temp copy of
     /// Tests/fixtures. Never touches a real user path. Throwing calls are
     /// hoisted out of `check`'s non-throwing autoclosure.
+    @MainActor
     private static func checkHermesAdapter() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
@@ -284,6 +290,7 @@ enum SelfTest {
     /// Tests/fixtures. Never touches a real user path: the stub is staged into
     /// a temp dir and the log is a temp path. Throwing calls are hoisted out of
     /// `check`'s non-throwing autoclosure.
+    @MainActor
     private static func checkClawdbotAdapter() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
@@ -646,6 +653,28 @@ enum SelfTest {
                   defaults.showMoneyInMenuBar && defaults.showIconInMenuBar && !defaults.notifyBelowEnabled)
 
             check("the selftest never targets the real settings path", settingsPath != AppConfig.path)
+
+            // Only row-affecting edits may rebuild rows, or a keystroke in the
+            // interval/threshold/toggle fields spawns a CLI on the main thread.
+            let base = AppConfig()
+            var interval = base; interval.refreshMinutes = 99
+            check("a refresh-interval change does not rebuild rows",
+                  !ConfigChange.affectsRows(from: base, to: interval))
+            var threshold = base; threshold.notifyBelowAmount = 1
+            check("an alert-threshold change does not rebuild rows",
+                  !ConfigChange.affectsRows(from: base, to: threshold))
+            var menuToggle = base; menuToggle.showMoneyInMenuBar = false
+            check("a menu-bar toggle does not rebuild rows",
+                  !ConfigChange.affectsRows(from: base, to: menuToggle))
+            var login = base; login.launchAtLogin = true
+            check("a launch-at-login change does not rebuild rows",
+                  !ConfigChange.affectsRows(from: base, to: login))
+            var hidden = base; hidden.hiddenTools = ["pi"]
+            check("hiding a tool rebuilds the rows",
+                  ConfigChange.affectsRows(from: base, to: hidden))
+            var override = base; override.binaryPathOverrides["clawdbot"] = "/opt/clawdbot"
+            check("a clawdbot path override rebuilds the rows",
+                  ConfigChange.affectsRows(from: base, to: override))
 
             // The status item must never be left with nothing to render, or it cannot be clicked.
             check("money and icon both on renders both", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false) == (text: "$17.10", symbol: "dollarsign.circle"))

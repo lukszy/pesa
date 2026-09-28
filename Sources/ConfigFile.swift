@@ -63,14 +63,20 @@ enum ConfigFile {
         let directory = (path as NSString).deletingLastPathComponent
         let dir = directory.isEmpty ? FileManager.default.currentDirectoryPath : directory
         let temp = "\(dir)/.ProviderCostController-\(UUID().uuidString).tmp"
+        // rename replaces the inode, so a fresh temp file would reset the
+        // target's mode to the default (~0644). Configs can hold API keys;
+        // preserve whatever mode the user had rather than loosening it. Neither
+        // read nor apply is swallowed: a mode we cannot carry over must fail the
+        // write loudly, not silently reset a protected file. The mode is read
+        // before the temp file exists so a failure here leaves nothing behind.
         do {
-            try contents.write(toFile: temp, atomically: false, encoding: .utf8)
-            // rename replaces the inode, so a fresh temp file would reset the
-            // target's mode to the default (~0644). Configs can hold API keys;
-            // preserve whatever mode the user had rather than loosening it.
-            if let mode = try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] {
-                try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: temp)
+            guard let mode = try FileManager.default
+                .attributesOfItem(atPath: path)[.posixPermissions]
+            else {
+                throw ConfigError.write(path, "could not read the existing file mode to preserve it")
             }
+            try contents.write(toFile: temp, atomically: false, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: temp)
             if rename(temp, path) != 0 {
                 let message = String(cString: strerror(errno))
                 try? FileManager.default.removeItem(atPath: temp)

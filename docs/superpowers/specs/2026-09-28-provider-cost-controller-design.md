@@ -93,18 +93,21 @@ builds, signs, and runs without Xcode.
 
 ## Architecture
 
-One executable named `ProviderCostController`, six source files, zero
+One executable named `ProviderCostController`, nine source files, zero
 third-party dependencies.
 
 ```
 provider-cost-controller/
 ├── Sources/
 │   ├── main.swift            # NSApplication, status item, popover, timer
-│   ├── UI.swift              # SwiftUI views for the popover content
+│   ├── UI.swift              # AppState + SwiftUI views for the popover content
 │   ├── OpenRouter.swift      # /credits + /models, catalog cache
 │   ├── Tools.swift           # the 4 tool adapters (detect/read/write)
+│   ├── ToolPaths.swift       # tool config path resolution + test staging
+│   ├── ConfigFile.swift      # byte-preserving config edits
 │   ├── AppConfig.swift       # app's own settings file
-│   └── Keychain.swift        # API key storage
+│   ├── Keychain.swift        # API key storage
+│   └── SelfTest.swift        # the --selftest suite
 ├── scripts/build-app.sh      # swiftc + .app assembly + ad-hoc sign
 └── Tests/fixtures/           # sample configs for --selftest
 ```
@@ -175,8 +178,9 @@ Behaviour:
 exception:** it also offers a built-in curated list of the providers it supports,
 whether or not they are configured yet, because a hermes user may be about to
 configure one. That list is deliberate and is not a bug to be removed.
-- Model dropdowns are searchable and **always accept free text**, so
-  `omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit` and
+- Model dropdowns list the fetched OpenRouter catalog (falling back to the
+  tool's own configured models) and **always accept free text** for anything
+  not listed, so `omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit` and
   `ollama/qwen3.8:latest` work exactly like a catalog entry.
 - Model references are split on the **first** `/` only, because model ids
   themselves contain slashes (`deepseek/deepseek-v4.1-flash`).
