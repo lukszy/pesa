@@ -307,10 +307,14 @@ One scrolling page, not tabs:
 
 ## Risks
 
-1. **Unsigned app and the Keychain.** An ad-hoc signature changes across
-   rebuilds, so macOS may re-prompt for Keychain access after each rebuild. Ad-hoc
-   signing reduces this; a stable Developer ID would remove it. Cosmetic, not
-   functional.
+1. **Unsigned app and the Keychain.** An ad-hoc signature's designated
+   requirement is a `cdhash`, so it changes whenever the *code* changes (not on
+   every rebuild: rebuilding identical source yields the same hash). macOS then
+   treats the new build as a different app and re-prompts for Keychain access.
+   `scripts/make-signing-identity.sh` creates a stable self-signed code-signing
+   identity, and `build-app.sh` uses it when present, giving the app a
+   certificate-based designated requirement that survives code changes.
+   Cosmetic, not functional.
 2. **No Xcode.** Proven workable by the spike, but `swiftc` plus hand-written
    `.app` assembly means no SwiftPM features (dependency resolution, test
    runner) are available. The design avoids needing any.

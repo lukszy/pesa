@@ -59,7 +59,7 @@ Command Line Tools only — no Xcode project, no SwiftPM, no XCTest.
 
 ```sh
 ./scripts/build.sh          # swiftc -> .build/ProviderCostController
-./scripts/build-app.sh      # build + assemble + ad-hoc sign ProviderCostController.app
+./scripts/build-app.sh      # build + assemble + sign ProviderCostController.app
 open ProviderCostController.app
 ```
 
@@ -67,7 +67,26 @@ open ProviderCostController.app
 not used because `swift package` cannot link its own manifest against
 `PackageDescription` on a CLT-only install, and XCTest is not shipped in the
 CLT toolchain. `build-app.sh` copies the binary and `Resources/Info.plist` into
-the bundle and signs it ad-hoc with `codesign -s -`.
+the bundle and signs it with the stable identity below when it is present in the
+Keychain, and ad-hoc with `codesign -s -` otherwise.
+
+### Stable signing identity
+
+An ad-hoc signature has no stable identity: its designated requirement is a hash
+of the code (`cdhash`), so the requirement changes whenever the code changes and
+macOS re-prompts for Keychain access. Create a self-signed code-signing
+certificate in the login keychain once (no admin rights, no trust-store
+changes):
+
+```sh
+./scripts/make-signing-identity.sh
+```
+
+`build-app.sh` picks the identity up automatically from then on; the app's
+designated requirement is certificate-based and survives code changes. Override
+the choice with `SIGNING_IDENTITY=<name>`, which falls back to ad-hoc if the
+name is not in the Keychain. To remove the identity:
+`security delete-identity -c "ProviderCostController Signing"`.
 
 ## Flags
 
@@ -98,8 +117,12 @@ To remove the key:
 security delete-generic-password -s provider-cost-controller -a openrouter
 ```
 
-or use the **Clear** button in the app's Settings. The Keychain item may be
-re-protected after a rebuild because the app is ad-hoc signed.
+or use the **Clear** button in the app's Settings.
+
+A key saved by an older ad-hoc-signed build has its Keychain ACL bound to the
+old code hash. Its first read by the newly certificate-signed app may therefore
+still prompt once; click **Always Allow** (or delete and re-save the key from the
+new build) to rebind it. The signing identity only stops future prompts.
 
 ## Settings
 
