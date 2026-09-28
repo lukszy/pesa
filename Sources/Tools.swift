@@ -32,6 +32,70 @@ enum Tools {
             }
         )
     }
+
+    static func opencode(_ paths: ToolPaths) -> ToolAdapter {
+        ToolAdapter(
+            id: "opencode",
+            displayName: "opencode",
+            detect: { detectOpencode(paths) },
+            currentModel: { try currentOpencodeModel(paths) },
+            providers: { try opencodeProviders(paths) },
+            models: { provider in try opencodeModels(paths, provider: provider) },
+            setModel: { ref in
+                // Single top-level write, unlike pi's two, so there is no
+                // torn-write concern here.
+                _ = try ConfigFile.setJSONString("model", to: ref.qualified, in: paths.opencodeConfig)
+            }
+        )
+    }
+}
+
+// MARK: - opencode
+
+/// File existence is the primary signal: a Finder-launched app gets a minimal
+/// `PATH`, so an `opencode` binary lookup can miss even when it is installed.
+private func detectOpencode(_ paths: ToolPaths) -> Bool {
+    let fm = FileManager.default
+    if fm.fileExists(atPath: paths.opencodeConfig) { return true }
+    for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
+        if fm.isExecutableFile(atPath: "\(dir)/opencode") { return true }
+    }
+    return false
+}
+
+/// opencode stores a single `provider/model` string. The model id itself keeps
+/// its slashes, which is exactly why `ToolModelRef.parse` splits on the first
+/// slash only.
+private func currentOpencodeModel(_ paths: ToolPaths) throws -> ToolModelRef? {
+    guard let config = try jsonObject(paths.opencodeConfig),
+          let model = config["model"] as? String else { return nil }
+    return ToolModelRef.parse(model)
+}
+
+/// The union of providers declared in the config's `provider` block and the
+/// authenticated providers in the auth file.
+private func opencodeProviders(_ paths: ToolPaths) throws -> [String] {
+    var names = Set<String>()
+    if let config = try jsonObject(paths.opencodeConfig),
+       let providers = config["provider"] as? [String: Any] {
+        names.formUnion(providers.keys)
+    }
+    if let auth = try jsonObject(paths.opencodeAuth) { names.formUnion(auth.keys) }
+    return names.sorted()
+}
+
+/// The model ids already configured for the provider. opencode takes free-text
+/// model ids, so an unconfigured provider legitimately yields an empty list.
+/// Task 11 injects the hosted catalog later.
+private func opencodeModels(_ paths: ToolPaths, provider: String) throws -> [(id: String, name: String)] {
+    guard let config = try jsonObject(paths.opencodeConfig),
+          let providers = config["provider"] as? [String: Any],
+          let entry = providers[provider] as? [String: Any],
+          let models = entry["models"] as? [String: Any] else { return [] }
+    return models.keys.sorted().map { id in
+        let name = (models[id] as? [String: Any])?["name"] as? String ?? id
+        return (id: id, name: name)
+    }
 }
 
 // MARK: - pi

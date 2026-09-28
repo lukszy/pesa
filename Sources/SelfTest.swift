@@ -23,6 +23,7 @@ enum SelfTest {
         checkStaging()
         checkConfigEdits()
         checkPiAdapter()
+        checkOpencodeAdapter()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -172,6 +173,43 @@ enum SelfTest {
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: readonlyDir)
         } catch {
             check("pi adapter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the opencode adapter against a staged temp copy of
+    /// Tests/fixtures. Never touches a real user path.
+    private static func checkOpencodeAdapter() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+            let oc = Tools.opencode(cfg)
+
+            check("opencode detects", oc.detect())
+
+            let initial = try oc.currentModel()
+            check("opencode reads the nested model id",
+                  initial == ToolModelRef(provider: "omlx",
+                      model: "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"))
+
+            let providers = try oc.providers()
+            check("opencode providers union config and auth",
+                  Set(providers).isSuperset(of: ["omlx", "lmstudio", "openrouter"]))
+
+            let omlxModels = try oc.models("omlx")
+            check("opencode lists the configured omlx model",
+                  omlxModels.contains { $0.id == "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" })
+            let unconfigured = try oc.models("openrouter")
+            check("opencode returns no models for an unconfigured provider",
+                  unconfigured.isEmpty)
+
+            try oc.setModel(ToolModelRef(provider: "openrouter", model: "acme/opus-1"))
+            let written = try oc.currentModel()
+            check("opencode wrote the model",
+                  written == ToolModelRef(provider: "openrouter", model: "acme/opus-1"))
+            let configAfter = try ConfigFile.read(cfg.opencodeConfig)
+            check("opencode preserved its provider block",
+                  configAfter.contains("@ai-sdk/openai-compatible"))
+        } catch {
+            check("opencode adapter checks could not run: \(error)", false)
         }
     }
 
