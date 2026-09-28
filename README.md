@@ -6,8 +6,7 @@ machine — clicking a harness's tile in the popover opens that harness's model
 editor in its own window.
 
 The app is a single `LSUIElement` process: no Dock icon, no persistent daemon,
-and no third-party dependencies. (It does spawn the clawdbot CLI on demand, but
-only while the popover is open and only to read or write clawdbot's config.)
+and no third-party dependencies.
 
 - **Balance** — remaining credit (`total_credits − total_usage`) from
   OpenRouter's `GET /api/v1/credits`, rendered in the menu bar and as the large
@@ -28,11 +27,15 @@ only while the popover is open and only to read or write clawdbot's config.)
   `limit_remaining` null) shows no bar at all, and a failed `/key` call hides
   the whole line rather than failing the refresh or blanking the balance. A
   missing usage field is treated as an error, never as `$0.00`.
-- **Models** — each detected tool whose config is readable is a tile showing
-  its current `provider/model` (or `unset`); a detected tool whose config cannot
-  be read is hidden and counted in the footer instead. Clicking a tile opens
-  that tool's model editor in its own window, where the built-in picker (or
-  free text) writes a new one back to that tool's own config. For a model that
+- **Opt-in popover** — the popover shows only the harnesses the user added in
+  Settings (`addedHarnesses`); detection still finds every installed harness so
+  Settings can offer them, but nothing auto-populates the grid. Each harness row
+  and tile carries its own icon (pi → `circle.hexagongrid`, opencode →
+  `chevron.left.forwardslash.chevron.right`, hermes → `paperplane`). A detected
+  tool whose config cannot be read is hidden and counted in the footer instead.
+  Clicking a tile opens that tool's model editor in its own window, where the
+  built-in picker (or free text) writes a new one back to that tool's own
+  config. For a model that
   is in OpenRouter's public catalog, the editor also shows a line such as
   `1M context · $3.00/M in · $15.00/M out`. Those prices are the **base** rates
   from `pricing.prompt`/`pricing.completion`; the same response carries tiered
@@ -47,9 +50,22 @@ only while the popover is open and only to read or write clawdbot's config.)
   cache serves both the picker and the price line without a network fetch. That
   restores the cache short-circuit: `/models` is no longer pulled on every
   refresh.
+- **OpenRouter provider routing (recorded)** — for an OpenRouter model the
+  editor adds a live per-provider table (name · `$in/M` · `$out/M` · throughput
+  p50 · a ZDR badge · quantization · privacy/ToS links), fetched from
+  `/models/{author}/{slug}/endpoints`, `/endpoints/zdr`, and `/providers` and
+  cached in memory for one hour. A missing price/speed/ZDR renders as an em
+  dash, never `$0.00`; a failed fetch shows no table at all and leaves the base
+  price line above it intact. Below the table an **Allowed providers** set of
+  checkboxes records the user's choice in `providerOnly[model]` — all checked
+  when the key is absent or empty, otherwise the checked slugs. This is an
+  OpenRouter-level, per-model preference the app records in its **own**
+  `config.json`; it is never written into any harness config, and the app does
+  not claim to apply it to a harness's requests. The editor says so on its face:
+  *OpenRouter provider routing for this model, recorded by this app.*
 - **Agents load asynchronously** — the popover appears immediately and shows
-  **Checking agents…** while detection runs, instead of waiting on clawdbot's
-  CLI, which can take seconds.
+  **Checking agents…** while detection runs, instead of waiting on filesystem
+  and CLI detection, which can take seconds.
 
 ## Supported tools
 
@@ -57,25 +73,17 @@ Only tools detected on this machine are listed. A detected tool with no model
 configured shows `unset`. A tool that is not detected is hidden, and a detected
 tool whose config cannot be read is omitted from the tiles — a single subdued
 line below the grid reports how many harnesses could not be read, so the
-failure is not silent. A tool whose config is readable but has no writable path
-— clawdbot with no resolvable CLI and a config the fallback parse can still read
-— keeps its tile, and its editor opens with **Set** disabled. With no resolvable
-CLI the model falls back to a parse of `clawdbot.json`, and that parse throws on
-an absent or comment-laden (JSON5) file, so in the common case that harness is
-dropped from the grid and counted in the footer rather than tiled — the
-hide-on-failure rule, stated below, is deliberate.
+failure is not silent.
 
 | Tool | Detected by | Reads | Writes |
 |---|---|---|---|
 | **pi** | `~/.pi/agent/settings.json` exists or `pi` on `PATH` | `defaultProvider` + `defaultModel` from `settings.json`; providers from `auth.json`, `models.json`, `models-store.json` | rewrites those two keys in `~/.pi/agent/settings.json` |
 | **opencode** | `~/.config/opencode/opencode.json` exists or `opencode` on `PATH` | top-level `model`; providers from the config `provider` block and `~/.local/share/opencode/auth.json` | sets top-level `model` in `~/.config/opencode/opencode.json` |
 | **hermes** | `~/.hermes/config.yaml` exists | top-level `model:`; providers from a curated list plus `providers:` keys and `*_API_KEY` names in `~/.hermes/.env` | sets or replaces the top-level `model:` line in `~/.hermes/config.yaml` |
-| **clawdbot** | `~/.clawdbot/` exists or a `clawdbot` binary resolves | `agents.defaults.model` via `clawdbot config get` and the catalog via `clawdbot models list --json` | `clawdbot models set <provider/model>` |
 
 Every write backs the previous file up to `<file>.bak`. The file-based
 adapters (pi, opencode, hermes) then apply the change atomically via a
-same-directory temp file plus rename; clawdbot's write is performed by its own
-CLI. Because **pi writes two keys** (`defaultProvider` then `defaultModel`) as
+same-directory temp file plus rename. Because **pi writes two keys** (`defaultProvider` then `defaultModel`) as
 two backed-up writes, its `.bak` may hold the state after the first of the two
 — the new provider with the old model — rather than the original file.
 
@@ -85,13 +93,6 @@ dropdowns list the providers a tool has configured or authenticated; **hermes
 is the exception** — it also offers a built-in curated list of providers it
 supports even if they are not configured yet, since a hermes user may be about
 to set one up. The model dropdown always accepts free text.
-
-**clawdbot is written through its own CLI, not by editing the file.** Its
-config (`~/.clawdbot/clawdbot.json`) is JSON5 with comments and trailing commas,
-which a JSON round-trip would destroy. If the CLI cannot be found and its config
-is still parseable, its tile is shown read-only rather than risking a rewrite.
-The CLI is looked up in standard absolute locations before `PATH`, because a
-Finder-launched app receives a minimal `PATH`.
 
 ## Build
 
@@ -170,11 +171,10 @@ Settings live in
 
 - refresh interval in minutes
 - launch at login
-- hidden tools
-- the clawdbot binary path, overridden by hand-editing the `binaryPathOverrides` key in `config.json`
-  (there is no Settings control for it; no other tool runs a binary, so none has a path to override)
+- the harnesses shown in the popover (`addedHarnesses`, added and removed in Settings)
+- per-model OpenRouter provider allow-lists (`providerOnly`; absent/empty means all providers)
 - whether the menu bar shows the balance and whether it shows the icon
-- whether the menu bar amount is hidden behind dots until hovered
+- whether the menu bar price is hidden as `...$` until hovered
 - whether the low-balance alert is enabled, and its threshold
 
 The file is plain JSON and contains no secrets.
@@ -211,12 +211,13 @@ balance text yet. A status item with nothing to render would have nothing to
 click and the app would become impossible to open or quit. Hiding the balance
 affects only the menu bar; the popover always shows it.
 
-The **Hide the amount behind dots until hovered** setting replaces the formatted
-amount with `$••••` (the `—` error indicator and the never-fetched case are
-unchanged, since neither reveals a figure). Hovering the status item reveals the
-real figure and leaving re-hides it, via an `NSTrackingArea` on the status
+The **Hide the price in the menu bar until hovered** setting replaces the
+formatted amount with `...$` (the `—` error indicator and the never-fetched case
+are unchanged, since neither reveals a figure). Hovering the status item reveals
+the real figure and leaving re-hides it, via an `NSTrackingArea` on the status
 button; the title is re-rendered on both the hover change and any settings
-change. This is dots, not a blur: an `NSStatusItem` title is plain text.
+change. This is text redaction, not a blur: an `NSStatusItem` title is plain
+text.
 
 ### Low-balance alert
 

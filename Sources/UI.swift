@@ -26,6 +26,34 @@ func formatTokenCount(_ count: Int) -> String {
     return "\(count)"
 }
 
+/// An endpoint's `throughput_last_30m.p50` in tokens per second. `nil` means
+/// the provider reported no throughput; it must render as omitted, never as
+/// "0 tok/s".
+func formatThroughput(_ tokensPerSecond: Double?) -> String? {
+    guard let tokensPerSecond else { return nil }
+    return String(format: "%.0f tok/s", tokensPerSecond)
+}
+
+/// An endpoint's `latency_last_30m.p50`. The schema documents milliseconds,
+/// but its own example (0.25 for GPT-4 time-to-first-token) only reads as
+/// seconds, so the unit is ambiguous. Rather than trust either reading, treat
+/// values below 5 as seconds and 5 or above as milliseconds.
+/// ponytail: magnitude heuristic for a doc-vs-example unit mismatch; replace
+/// with the single unit once the API settles on one.
+func formatLatency(_ p50: Double?) -> String? {
+    guard let p50 else { return nil }
+    if p50 < 5 { return String(format: "%.2f s", p50) }
+    return String(format: "%.0f ms", p50)
+}
+
+/// A harness row's one-line model text: `provider/model`, or `unset` when the
+/// harness has no model configured. Shared by the popover tile and the Settings
+/// harness row so the two cannot drift.
+func formatHarnessModel(_ state: ToolState) -> String {
+    if case .configured(let ref) = state { return "\(ref.provider)/\(ref.model)" }
+    return "unset"
+}
+
 /// The harness window's one-line model summary, e.g.
 /// `1M context · $3.00/M in · $15.00/M out`. Each part is omitted when its
 /// datum is missing, and `nil` means there is nothing to show at all. These
@@ -56,7 +84,7 @@ enum MenuBarPresentation {
         } else if error {
             text = "—"
         } else if let balance {
-            text = redacted ? "$••••" : formatBalance(balance)
+            text = redacted ? "...$" : formatBalance(balance)
         } else {
             // Never fetched: render nothing rather than a $0.00 lie.
             text = nil
@@ -86,44 +114,48 @@ enum BalanceAlert {
     }
 }
 
-/// Which config edits require rebuilding the tool rows. Only the fields that
-/// feed a row — the hidden set and the clawdbot binary override — may rebuild:
-/// `adapter.state()` can spawn a CLI, so rebuilding on an interval, threshold,
-/// toggle, or launch-at-login edit freezes the UI per keystroke. Pure, so the
-/// decision is testable without an `AppState` or a real tool install.
+/// Which config edits require rebuilding the tool rows. Only the harness set
+/// (`addedHarnesses`) feeds a row: `adapter.state()` can spawn a CLI, so
+/// rebuilding on an interval, threshold, toggle, or launch-at-login edit freezes
+/// the UI per keystroke. Pure, so the decision is testable without an `AppState`
+/// or a real tool install.
 enum ConfigChange {
     static func affectsRows(from old: AppConfig, to new: AppConfig) -> Bool {
-        old.hiddenTools != new.hiddenTools
-            || old.binaryPathOverrides != new.binaryPathOverrides
+        old.addedHarnesses != new.addedHarnesses
     }
 }
 
-/// The UI projection of one detected adapter. `writable` is false when the
-/// adapter cannot perform a write — clawdbot without a binary — or when its
-/// config could not be read, in which case its Change control is disabled and
-/// `AppState.rowErrors` carries the problem.
+/// The UI projection of one detected adapter. A row whose config could not be
+/// read carries `.unset` and is excluded from the grid; `AppState.rowErrors`
+/// carries the problem.
 struct ToolRow {
     let id: String
     let displayName: String
+    let symbol: String
     let state: ToolState
     let providers: [String]
-    let writable: Bool
 }
 
-/// Which detected harnesses render as tiles. A harness whose discovery failed
-/// is dropped from the grid entirely rather than shown as a broken row; its
-/// count drives the popover's subdued footer so the failure is not silent.
-/// Pure, so the visibility rule is pinned by checks instead of by eye.
-/// `failed` is `AppState.rowErrors`, keyed by adapter id.
+/// Which detected harnesses render as tiles. A tile needs both halves of the
+/// opt-in rule: the user added the harness, **and** discovery read it. A failed
+/// harness is dropped from the grid entirely rather than shown as a broken row;
+/// its count drives the popover's subdued footer so the failure is not silent.
+/// Pure, so the visibility rule is pinned by checks instead of by eye. `failed`
+/// is `AppState.rowErrors`, keyed by adapter id.
 enum HarnessTiles {
-    static func visible(rows: [ToolRow], failed: [String: String]) -> [ToolRow] {
-        rows.filter { failed[$0.id] == nil }
+    /// A tile renders only when the user added the harness **and** discovery
+    /// read it. Membership alone is not enough: a failed harness must not
+    /// reappear as a broken tile.
+    static func visible(rows: [ToolRow], added: Set<String>, failed: [String: String]) -> [ToolRow] {
+        rows.filter { added.contains($0.id) && failed[$0.id] == nil }
     }
 
-    /// Failures that correspond to a row — i.e. the tiles actually excluded.
-    /// Counting `failed.count` would also include failures for hidden tools.
+    /// Failures that correspond to a row — i.e. the tiles actually excluded by
+    /// failure. Counting `failed.count` would also include failures for hidden
+    /// tools; deriving it from the healthy rows keeps it independent of
+    /// `added`, so a failed harness is reported whether or not it was added.
     static func failedCount(rows: [ToolRow], failed: [String: String]) -> Int {
-        rows.count - visible(rows: rows, failed: failed).count
+        rows.count - rows.filter { failed[$0.id] == nil }.count
     }
 }
 
@@ -136,12 +168,11 @@ struct DiscoveryOutcome {
 }
 
 /// Builds the provider cache and tool rows. Deliberately not actor-isolated:
-/// `detect()`, `state()`, `providers()` and `Tools.canWrite` touch only the
-/// filesystem and the adapters' non-main-actor closures. `CatalogCache` and
-/// `ToolAdapter.models` are `@MainActor` and are never reached from here, so
-/// this can run in a detached task without annotation changes.
-func discoverAdapters(_ adapters: [ToolAdapter], hiddenTools: [String],
-                      paths: ToolPaths) -> DiscoveryOutcome {
+/// `detect()`, `state()` and `providers()` touch only the filesystem and the
+/// adapters' non-main-actor closures. `CatalogCache` and `ToolAdapter.models`
+/// are `@MainActor` and are never reached from here, so this can run in a
+/// detached task without annotation changes.
+func discoverAdapters(_ adapters: [ToolAdapter]) -> DiscoveryOutcome {
     var providers: [String: [String]] = [:]
     for adapter in adapters where adapter.detect() {
         if let list = try? adapter.providers() {
@@ -151,26 +182,27 @@ func discoverAdapters(_ adapters: [ToolAdapter], hiddenTools: [String],
 
     var rows: [ToolRow] = []
     var errors: [String: String] = [:]
-    for adapter in Tools.detected(adapters) where !hiddenTools.contains(adapter.id) {
+    for adapter in Tools.detected(adapters) {
         do {
             let toolState = try adapter.state()
             rows.append(ToolRow(
                 id: adapter.id,
                 displayName: adapter.displayName,
+                symbol: adapter.symbol,
                 state: toolState,
-                providers: providers[adapter.id] ?? [],
-                writable: Tools.canWrite(adapter, paths: paths)))
+                providers: providers[adapter.id] ?? []))
         } catch {
             // Unreadable config: keep the row so the failure can be counted,
-            // but `HarnessTiles.visible` excludes it from the grid. The error
-            // text itself is never rendered inline; only the footer count is.
+            // but `HarnessTiles.visible` excludes it from the grid. The popover
+            // shows only the footer count; Settings renders the error text
+            // beside the harness row.
             errors[adapter.id] = describeError(error)
             rows.append(ToolRow(
                 id: adapter.id,
                 displayName: adapter.displayName,
+                symbol: adapter.symbol,
                 state: .unset,
-                providers: [],
-                writable: false))
+                providers: []))
         }
     }
     return DiscoveryOutcome(providers: providers, rows: rows, errors: errors)
@@ -255,6 +287,10 @@ final class AppState: ObservableObject {
 
     private let paths: ToolPaths
     private var providerCache: [String: [String]] = [:]
+    /// One-hour in-memory cache of endpoint facts, keyed by model id. The data
+    /// is volatile and small, so it is never written to disk.
+    private var endpointsCache: [String: (fetchedAt: Date, endpoints: [EndpointInfo])] = [:]
+    private var endpointsTask: Task<Void, Never>?
     private var previousBalance: Double?
     private var refreshTimer: Timer?
     private var isRefreshing = false
@@ -272,17 +308,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Adapters
 
-    /// The real paths with any configured binary override applied. Only
-    /// clawdbot runs a binary; the file-based adapters read their configs.
-    private var effectivePaths: ToolPaths {
-        var paths = self.paths
-        if let override = config.binaryPathOverrides["clawdbot"], !override.isEmpty {
-            paths.clawdbotBin = override
-        }
-        return paths
-    }
-
-    private var orderedAdapters: [ToolAdapter] { Tools.all(effectivePaths) }
+    private var orderedAdapters: [ToolAdapter] { Tools.all(paths) }
 
     private var adaptersByID: [String: ToolAdapter] {
         Dictionary(uniqueKeysWithValues: orderedAdapters.map { ($0.id, $0) })
@@ -358,7 +384,7 @@ final class AppState: ObservableObject {
     // MARK: - Rows
 
     /// Discovers each detected tool's provider list and row state. The
-    /// filesystem work and clawdbot's CLI launches run in a detached task; only
+    /// filesystem work runs in a detached task; only
     /// the finished values are merged here on the main actor. Called while the
     /// popover is open and whenever a row-affecting setting changes, never by
     /// the refresh timer. A request arriving mid-pass is coalesced into a
@@ -375,10 +401,8 @@ final class AppState: ObservableObject {
         repeat {
             discoveryPending = false
             let adapters = orderedAdapters
-            let hiddenTools = config.hiddenTools
-            let paths = effectivePaths
             let outcome = await Task.detached(priority: .userInitiated) {
-                discoverAdapters(adapters, hiddenTools: hiddenTools, paths: paths)
+                discoverAdapters(adapters)
             }.value
 
             providerCache = outcome.providers
@@ -424,10 +448,18 @@ final class AppState: ObservableObject {
     /// as `@State` in a view so the window can be retargeted to another harness
     /// without rebuilding its content view.
     @Published var editAdapterID: String?
-    @Published var editProvider = ""
-    @Published var editModel = ""
+    @Published var editProvider = "" {
+        didSet { refreshEditEndpoints() }
+    }
+    @Published var editModel = "" {
+        didSet { refreshEditEndpoints() }
+    }
     @Published var editProviders: [String] = []
     @Published var editModels: [(id: String, name: String)] = []
+    /// Live OpenRouter per-provider facts for the selected model. Empty while a
+    /// fetch is in flight and after one fails; the editor's base price line is
+    /// independent, so a failure never blanks it.
+    @Published var editEndpoints: [EndpointInfo] = []
 
     func beginEdit(_ row: ToolRow) {
         editAdapterID = row.id
@@ -443,6 +475,49 @@ final class AppState: ObservableObject {
         editModels = models(forAdapterID: adapterID, provider: provider)
         if reset || !editModels.contains(where: { $0.id == editModel }) {
             editModel = editModels.first?.id ?? ""
+        }
+        // A same-value assignment does not fire `editModel`'s `didSet`, so a
+        // provider switch that keeps the model id must refresh explicitly.
+        refreshEditEndpoints()
+    }
+
+    /// Loads the OpenRouter endpoint facts for the current editor selection.
+    /// Served from the one-hour cache when fresh; otherwise one Task fetches
+    /// and applies the result only if the model is still selected. No key, a
+    /// non-OpenRouter provider, or any fetch failure leaves `editEndpoints`
+    /// empty rather than failing the editor.
+    private func refreshEditEndpoints() {
+        guard editProvider == "openrouter" else {
+            editEndpoints = []
+            return
+        }
+        let modelID = editModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A partial id being typed is not a model yet; wait for its slash.
+        guard modelID.contains("/") else {
+            editEndpoints = []
+            return
+        }
+        if let cached = endpointsCache[modelID],
+           Date().timeIntervalSince(cached.fetchedAt) < 60 * 60 {
+            editEndpoints = cached.endpoints
+            return
+        }
+        guard let key = Keychain.get(account: Self.keychainAccount), Keychain.isUsableKey(key) else {
+            editEndpoints = []
+            return
+        }
+        editEndpoints = []
+        endpointsTask?.cancel()
+        endpointsTask = Task { [weak self] in
+            let fetched = try? await OpenRouter.modelEndpoints(modelID: modelID, apiKey: key)
+            guard let self, !Task.isCancelled else { return }
+            let endpoints = fetched ?? []
+            self.endpointsCache[modelID] = (fetchedAt: Date(), endpoints: endpoints)
+            // A late reply for a model the user has since moved off must not
+            // overwrite the current table.
+            guard self.editProvider == "openrouter",
+                  self.editModel.trimmingCharacters(in: .whitespacesAndNewlines) == modelID else { return }
+            self.editEndpoints = endpoints
         }
     }
 
@@ -660,7 +735,8 @@ struct PopoverView: View {
             // not from this view.
             Text(balanceText)
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
-                .padding(.vertical, 6)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
             // The balance above is account-wide; this line is for the one API
             // key. The help text says so, because with more than one key the
             // two figures do not reconcile.
@@ -716,18 +792,25 @@ struct PopoverView: View {
     // MARK: Tools
 
     private var toolList: some View {
-        let visible = HarnessTiles.visible(rows: state.rows, failed: state.rowErrors)
+        // Opt-in: only harnesses the user added in Settings, and only the ones
+        // discovery could read. Adding or removing one writes
+        // `addedHarnesses`, whose `didSet` re-runs discovery.
+        let visible = HarnessTiles.visible(
+            rows: state.rows,
+            added: Set(state.config.addedHarnesses),
+            failed: state.rowErrors)
         let failed = HarnessTiles.failedCount(rows: state.rows, failed: state.rowErrors)
         return VStack(alignment: .leading, spacing: 8) {
-            if state.rows.isEmpty {
+            if state.isDiscovering || !state.hasCompletedDiscovery {
                 // Discovery is asynchronous; while it is in flight — or before
                 // the first pass has finished — the popover is already on
                 // screen and this keeps it from looking empty. Gating on
-                // `isDiscovering` alone would flash "No supported tools
-                // detected." on the very first open, before main.swift has
-                // started discovery.
-                Text(state.isDiscovering || !state.hasCompletedDiscovery
-                     ? "Checking agents…" : "No supported tools detected.")
+                // `isDiscovering` alone would flash the empty state on the very
+                // first open, before main.swift has started discovery.
+                Text("Checking agents…")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if visible.isEmpty {
+                Text("No harnesses added — add one in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 LazyVGrid(columns: [
@@ -754,8 +837,11 @@ struct PopoverView: View {
             HarnessWindow.open(for: row, state: state)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(row.displayName).font(.body).bold()
-                Text(modelText(row)).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Image(systemName: row.symbol)
+                    Text(row.displayName).font(.body).bold()
+                }
+                Text(formatHarnessModel(row.state)).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -764,11 +850,6 @@ struct PopoverView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func modelText(_ row: ToolRow) -> String {
-        if case .configured(let ref) = row.state { return "\(ref.provider)/\(ref.model)" }
-        return "unset"
     }
 
 }
@@ -782,11 +863,9 @@ struct ModelEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: row.symbol)
                 Text(row.displayName).font(.headline)
-                if !row.writable {
-                    Text("read-only").font(.caption).foregroundStyle(.secondary)
-                }
             }
             Picker("Provider", selection: Binding(
                 get: { state.editProvider },
@@ -809,9 +888,8 @@ struct ModelEditorView: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .help("Base rates from OpenRouter's public model catalog. Tiered overrides above a prompt-token threshold are not shown.")
             }
-            if !row.writable {
-                Text("No writable CLI was found, so this harness cannot be changed.")
-                    .font(.caption).foregroundStyle(.secondary)
+            if state.editProvider == "openrouter" && !state.editModel.isEmpty {
+                openRouterProviders
             }
             HStack {
                 Button("Cancel") {
@@ -820,11 +898,122 @@ struct ModelEditorView: View {
                 }
                 Spacer()
                 Button("Set") { state.commitEdit() }
-                    .disabled(!row.writable || state.editProvider.isEmpty || state.editModel.isEmpty)
+                    .disabled(state.editProvider.isEmpty || state.editModel.isEmpty)
             }
         }
         .padding(16)
         .frame(width: 380)
+    }
+
+    // MARK: OpenRouter provider routing
+
+    /// The live per-provider table plus the recorded allow-list. Rendered only
+    /// for an OpenRouter model with a selection; a failed or empty fetch shows
+    /// nothing rather than a row of zeros, and the base price line above stays
+    /// untouched.
+    @ViewBuilder
+    private var openRouterProviders: some View {
+        if !state.editEndpoints.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                providerTable
+                Text("Allowed providers")
+                    .font(.caption).bold()
+                ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
+                    Toggle(isOn: allowedBinding(for: endpoint.providerSlug)) {
+                        Text(endpoint.providerName)
+                    }
+                    .toggleStyle(.checkbox)
+                }
+                Text("OpenRouter provider routing for this model, recorded by this app.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var providerTable: some View {
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
+            GridRow {
+                Text("Provider").font(.caption).bold()
+                Text("In/M").font(.caption).bold()
+                Text("Out/M").font(.caption).bold()
+                Text("Speed").font(.caption).bold()
+                Text("ZDR").font(.caption).bold()
+                Text("Quant").font(.caption).bold()
+                Text("Links").font(.caption).bold()
+            }
+            ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
+                GridRow {
+                    Text(endpoint.providerName).font(.caption)
+                    Text(priceCell(endpoint.promptPricePerToken)).font(.caption)
+                    Text(priceCell(endpoint.completionPricePerToken)).font(.caption)
+                    Text(speedCell(endpoint)).font(.caption)
+                    if endpoint.zdr {
+                        Text("ZDR").font(.caption2)
+                            .padding(.horizontal, 4)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.2)))
+                    } else {
+                        Text("—").font(.caption)
+                    }
+                    Text(endpoint.quantization ?? "—").font(.caption)
+                    providerLinks(endpoint).font(.caption)
+                }
+            }
+        }
+    }
+
+    /// A missing price is an em dash, never `$0.00`.
+    private func priceCell(_ pricePerToken: Double?) -> String {
+        guard let pricePerToken else { return "—" }
+        return formatPerMillionTokens(pricePerToken)
+    }
+
+    /// Throughput and latency, each omitted when the endpoint reported none.
+    private func speedCell(_ endpoint: EndpointInfo) -> String {
+        let parts = [formatThroughput(endpoint.throughputP50), formatLatency(endpoint.latencyP50)]
+            .compactMap { $0 }
+        return parts.isEmpty ? "—" : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func providerLinks(_ endpoint: EndpointInfo) -> some View {
+        HStack(spacing: 6) {
+            if let privacy = endpoint.privacyPolicyURL, let url = URL(string: privacy) {
+                Link("Privacy", destination: url)
+            }
+            if let tos = endpoint.termsOfServiceURL, let url = URL(string: tos) {
+                Link("ToS", destination: url)
+            }
+            if endpoint.privacyPolicyURL == nil && endpoint.termsOfServiceURL == nil {
+                Text("—")
+            }
+        }
+    }
+
+    /// The checked provider slugs: the stored list when present, otherwise all.
+    private var checkedSlugs: Set<String> {
+        let all = state.editEndpoints.map(\.providerSlug)
+        guard let stored = state.config.providerOnly[state.editModel], !stored.isEmpty else {
+            return Set(all)
+        }
+        return Set(stored)
+    }
+
+    /// One checkbox over the recorded allow-list. An absent or empty stored list
+    /// means all checked; checking every box removes the key again so "all" is
+    /// never stored explicitly.
+    private func allowedBinding(for slug: String) -> Binding<Bool> {
+        Binding(
+            get: { checkedSlugs.contains(slug) },
+            set: { isOn in
+                var checked = checkedSlugs
+                if isOn { checked.insert(slug) } else { checked.remove(slug) }
+                let all = state.editEndpoints.map(\.providerSlug)
+                if checked.isSuperset(of: all) {
+                    state.config.providerOnly.removeValue(forKey: state.editModel)
+                } else {
+                    state.config.providerOnly[state.editModel] = all.filter { checked.contains($0) }
+                }
+            })
     }
 
     /// Keeps the current value selectable so the Picker never logs an invalid
@@ -862,7 +1051,7 @@ enum HarnessWindow {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false)
@@ -897,6 +1086,8 @@ struct SettingsView: View {
                 Divider()
                 refreshSection
                 Divider()
+                harnessesSection
+                Divider()
                 menuBarSection
                 Divider()
                 alertsSection
@@ -907,6 +1098,12 @@ struct SettingsView: View {
         }
         .frame(width: 420)
         .frame(maxHeight: 560)
+        // Settings is now where a harness is added, so it must be able to run
+        // the detection pass itself instead of waiting for the popover to have
+        // been opened. Idempotent: the guard skips a pass that already ran.
+        .task {
+            if !state.hasCompletedDiscovery { await state.discoverProviders() }
+        }
     }
 
     private var apiKeySection: some View {
@@ -939,12 +1136,77 @@ struct SettingsView: View {
         }
     }
 
+    /// The harness registry. Detection still finds every installed harness; this
+    /// section is where the user opts one into the popover and reaches its
+    /// editor. `SettingsView.body` owns the one discovery pass that populates
+    /// `rows`, so opening Settings first still lets a harness be added.
+    private var harnessesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Agent harnesses").font(.headline)
+            if !state.hasCompletedDiscovery {
+                Text("Checking agents…")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if state.rows.isEmpty {
+                Text("No harnesses detected.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(state.rows, id: \.id) { row in
+                    harnessRow(row)
+                }
+            }
+            Text("Added harnesses appear in the popover. Configure… opens the model editor.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func harnessRow(_ row: ToolRow) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: row.symbol)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.displayName)
+                Text(formatHarnessModel(row.state))
+                    .font(.caption).foregroundStyle(.secondary)
+                if let error = state.rowErrors[row.id] {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Toggle("", isOn: addedBinding(for: row.id))
+                .labelsHidden()
+            // An unreadable harness has no model to edit, so it offers no
+            // Configure button; its error above explains why.
+            if state.rowErrors[row.id] == nil {
+                Button("Configure…") {
+                    state.beginEdit(row)
+                    HarnessWindow.open(for: row, state: state)
+                }
+            }
+        }
+    }
+
+    /// Membership in `addedHarnesses`. The write goes through `config`'s
+    /// `didSet`, which saves and re-runs discovery because
+    /// `ConfigChange.affectsRows` fires on this field.
+    private func addedBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { state.config.addedHarnesses.contains(id) },
+            set: { isOn in
+                if isOn {
+                    if !state.config.addedHarnesses.contains(id) {
+                        state.config.addedHarnesses.append(id)
+                    }
+                } else {
+                    state.config.addedHarnesses.removeAll { $0 == id }
+                }
+            })
+    }
+
     private var menuBarSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Menu bar").font(.headline)
             Toggle("Show balance", isOn: $state.config.showMoneyInMenuBar)
             Toggle("Show icon", isOn: $state.config.showIconInMenuBar)
-            Toggle("Hide the amount behind dots until hovered", isOn: $state.config.hidesAmountInMenuBar)
+            Toggle("Hide the price in the menu bar until hovered", isOn: $state.config.hidesAmountInMenuBar)
             Text("The icon stays visible if both are cleared, so the menu bar item remains clickable.")
                 .font(.caption).foregroundStyle(.secondary)
         }

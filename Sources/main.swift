@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Show first: discovery (clawdbot's CLI launches) runs off the main
+            // Show first: discovery runs off the main
             // actor afterwards, so it cannot delay the popover appearing.
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()

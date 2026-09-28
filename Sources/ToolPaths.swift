@@ -11,9 +11,6 @@ struct ToolPaths {
     var opencodeAuth: String = ""
     var hermesConfig: String = ""
     var hermesEnv: String = ""
-    var clawdbotConfig: String = ""
-    var clawdbotDir: String = ""
-    var clawdbotBin: String = ""
 
     /// The real user paths, from the design spec's tool table.
     static var real: ToolPaths {
@@ -27,9 +24,6 @@ struct ToolPaths {
         paths.opencodeAuth = "\(home)/.local/share/opencode/auth.json"
         paths.hermesConfig = "\(home)/.hermes/config.yaml"
         paths.hermesEnv = "\(home)/.hermes/.env"
-        paths.clawdbotConfig = "\(home)/.clawdbot/clawdbot.json"
-        paths.clawdbotDir = "\(home)/.clawdbot"
-        paths.clawdbotBin = resolveBinary("clawdbot")
         return paths
     }
 
@@ -57,21 +51,6 @@ struct ToolPaths {
         paths.opencodeAuth = "\(root)/opencode-auth.json"
         paths.hermesConfig = "\(root)/hermes-config.yaml"
         paths.hermesEnv = "\(root)/hermes.env"
-        paths.clawdbotConfig = "\(root)/clawdbot.json"
-        paths.clawdbotDir = root
-        paths.clawdbotBin = "\(root)/bin/clawdbot"
-
-        if fm.fileExists(atPath: paths.clawdbotBin) {
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: paths.clawdbotBin)
-        }
         return paths
-    }
-
-    private static func resolveBinary(_ name: String) -> String {
-        for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
-            let candidate = "\(dir)/\(name)"
-            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return name
     }
 }

@@ -9,8 +9,8 @@ import Foundation
 struct AppConfig: Codable {
     var refreshMinutes: Int = 10
     var launchAtLogin: Bool = false
-    var hiddenTools: [String] = []
-    var binaryPathOverrides: [String: String] = [:]
+    var addedHarnesses: [String] = []
+    var providerOnly: [String: [String]] = [:]
     var showMoneyInMenuBar: Bool = true
     var showIconInMenuBar: Bool = true
     var hidesAmountInMenuBar: Bool = false
@@ -34,8 +34,8 @@ struct AppConfig: Codable {
         // throws from decodeIfPresent and must cost only its own field, not the struct.
         refreshMinutes = (try? c.decodeIfPresent(Int.self, forKey: .refreshMinutes)) ?? 10
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
-        hiddenTools = (try? c.decodeIfPresent([String].self, forKey: .hiddenTools)) ?? []
-        binaryPathOverrides = (try? c.decodeIfPresent([String: String].self, forKey: .binaryPathOverrides)) ?? [:]
+        addedHarnesses = (try? c.decodeIfPresent([String].self, forKey: .addedHarnesses)) ?? []
+        providerOnly = (try? c.decodeIfPresent([String: [String]].self, forKey: .providerOnly)) ?? [:]
         showMoneyInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar)) ?? true
         showIconInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar)) ?? true
         hidesAmountInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .hidesAmountInMenuBar)) ?? false
