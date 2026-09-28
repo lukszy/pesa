@@ -22,6 +22,7 @@ enum SelfTest {
               countFailures([("deliberate false", false), ("deliberate true", true)]) == 1)
         checkStaging()
         checkConfigEdits()
+        checkPiAdapter()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -112,6 +113,65 @@ enum SelfTest {
             check("a write preserves the config's restrictive mode", mode == 0o600)
         } catch {
             check("config edit checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the pi adapter against a staged temp copy of Tests/fixtures.
+    /// Never touches a real user path. Throwing calls are hoisted out of
+    /// `check`'s non-throwing autoclosure exactly as the Task 3 checks do.
+    private static func checkPiAdapter() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+            let pi = Tools.pi(cfg)
+
+            check("pi detects", pi.detect())
+
+            let initial = try pi.currentModel()
+            check("pi reads current model",
+                  initial == ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash"))
+
+            let providers = try pi.providers()
+            check("pi providers include authed and configured ones",
+                  Set(providers).isSuperset(of: ["openrouter", "openai", "ollama"]))
+
+            let openrouterModels = try pi.models("openrouter")
+            check("pi model list carries display names",
+                  openrouterModels.contains { $0.id == "~anthropic/claude-fable-latest" })
+
+            let ollamaModels = try pi.models("ollama")
+            check("pi model list falls back to configured models",
+                  ollamaModels.contains { $0.id == "qwen3.8:latest" })
+
+            try pi.setModel(ToolModelRef(provider: "openai", model: "gpt-5.6-luna"))
+            let written = try pi.currentModel()
+            check("pi wrote both keys",
+                  written == ToolModelRef(provider: "openai", model: "gpt-5.6-luna"))
+            let settingsAfter = try ConfigFile.read(cfg.piSettings)
+            check("pi preserved the rest of settings.json",
+                  settingsAfter.contains("\"defaultThinkingLevel\""))
+
+            // Read-only config. `rename(2)` only needs write permission on the
+            // parent directory, so chmodding the file alone would let the write
+            // succeed for the wrong reason: stage the file in its own subdir and
+            // make that 0555, then restore 0755.
+            let readonlyDir = (cfg.piSettings as NSString).deletingLastPathComponent
+                + "/readonly-\(UUID().uuidString)"
+            let fm = FileManager.default
+            try fm.createDirectory(atPath: readonlyDir, withIntermediateDirectories: true)
+            let readonlyFile = readonlyDir + "/pi-settings.json"
+            try fm.copyItem(atPath: cfg.piSettings, toPath: readonlyFile)
+            var readonlyCfg = cfg
+            readonlyCfg.piSettings = readonlyFile
+            let readonlyPi = Tools.pi(readonlyCfg)
+            let readonlyBefore = try ConfigFile.read(readonlyFile)
+            try fm.setAttributes([.posixPermissions: 0o555], ofItemAtPath: readonlyDir)
+            check("read-only config reports an error",
+                  (try? readonlyPi.setModel(ToolModelRef(provider: "x", model: "y"))) == nil)
+            let readonlyAfter = try ConfigFile.read(readonlyFile)
+            check("read-only config is left byte-identical", readonlyAfter == readonlyBefore)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: readonlyDir)
+        } catch {
+            check("pi adapter checks could not run: \(error)", false)
         }
     }
 

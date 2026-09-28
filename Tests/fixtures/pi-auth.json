@@ -1,0 +1,5 @@
+{
+  "openrouter": { "type": "oauth", "access": "sk-or-v1-selftest-fixture-not-a-real-key", "refresh": "" },
+  "openai": { "type": "api_key", "key": "not-a-real-key" },
+  "opencode": { "type": "api_key", "key": "not-a-real-key" }
+}
