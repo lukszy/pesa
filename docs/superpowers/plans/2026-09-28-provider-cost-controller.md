@@ -24,6 +24,8 @@
 - The API key lives only in the Keychain (service `provider-cost-controller`, account `openrouter`). It must never be written to a file, logged, or included in an error message.
 - App settings file: `~/Library/Application Support/ProviderCostController/config.json`.
 - Never write placeholder code for anything in the spec's Non-goals section.
+- The selftest must never read or write a real user path (`~/.pi`, `~/.config`, `~/.hermes`, `~/.clawdbot`, `~/Library`). Every check runs against `ToolPaths.stagedInTempDir`.
+- No check may be written so that it cannot fail (for example `<condition> || true`). A vacuous check is a defect.
 
 ## Review Focus
 
@@ -102,7 +104,24 @@ Expected: `FAIL harness detects a false condition`, `exit=1`.
 
 - [ ] **Step 3: Fix the check and add `ToolPaths`**
 
-Change the check to a true condition. Add `ToolPaths` fields: `piSettings`, `piAuth`, `piModels`, `piModelsStore`, `opencodeConfig`, `opencodeAuth`, `hermesConfig`, `hermesEnv`, `clawdbotDir`, `clawdbotBin`. `real` resolves the paths from the spec's table. `stagedInTempDir(from:)` copies every file present in the fixture directory into a fresh temp directory and returns a `ToolPaths` pointing at the copies.
+Change the check to a true condition. Add `ToolPaths` fields: `piSettings`, `piAuth`, `piModels`, `piModelsStore`, `opencodeConfig`, `opencodeAuth`, `hermesConfig`, `hermesEnv`, `clawdbotConfig`, `clawdbotDir`, `clawdbotBin`. `real` resolves the paths from the spec's table.
+
+`stagedInTempDir(from:)` copies the fixture directory into a fresh temp directory and returns a `ToolPaths` pointing at the copies, using this fixed fixture-name → field mapping:
+
+| fixture | ToolPaths field |
+|---|---|
+| `pi-settings.json` | `piSettings` |
+| `pi-auth.json` | `piAuth` |
+| `pi-models.json` | `piModels` |
+| `pi-models-store.json` | `piModelsStore` |
+| `opencode.json` | `opencodeConfig` |
+| `opencode-auth.json` | `opencodeAuth` |
+| `hermes-config.yaml` | `hermesConfig` |
+| `hermes.env` | `hermesEnv` |
+| `clawdbot.json` | `clawdbotConfig`; `clawdbotDir` is its parent directory |
+| `bin/clawdbot` | `clawdbotBin`, staged mode `0755` |
+
+A fixture that is absent maps to a path inside the temp directory that does not exist. The staged `bin/clawdbot` must be made executable (`chmod 0755`) after copying, or Task 7 cannot launch it. `stagedInTempDir` must not read or write any path outside its temp directory.
 
 - [ ] **Step 4: Run it to verify it passes**
 
@@ -131,7 +150,7 @@ git commit -m "test: assert-based self-test harness and injectable tool paths"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `SelfTest.run()`, using a staged temp copy of `Tests/fixtures/opencode.json`:
+In `SelfTest.run()`, using a staged temp copy of `Tests/fixtures/opencode.json`. That fixture must contain `"model": "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"`, a `provider` block containing `omlx` and `lmstudio`, and the string `@ai-sdk/openai-compatible`, so Tasks 3, 5, and 11 all read the same file consistently:
 
 ```swift
 SelfTest.check("parse splits on the first slash only",
@@ -141,7 +160,7 @@ SelfTest.check("parse keeps a colon inside the model",
 let before = try ConfigFile.read(cfg.opencodeConfig)
 try ConfigFile.setJSONString("model", to: "openrouter/acme/opus-1", in: cfg.opencodeConfig)
 let after = try ConfigFile.read(cfg.opencodeConfig)
-SelfTest.check("only the model value changed", after.replacingOccurrences(of: "openrouter/acme/opus-1", with: "omlx/old") == before)
+SelfTest.check("only the model value changed", after.replacingOccurrences(of: "openrouter/acme/opus-1", with: "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit") == before)
 SelfTest.check("backup holds the pre-write bytes", try ConfigFile.read(cfg.opencodeConfig + ".bak") == before)
 SelfTest.check("missing file is reported, not crashed", (try? ConfigFile.setJSONString("model", to: "x", in: "/nonexistent/y.json")) == nil)
 ```
@@ -178,7 +197,7 @@ git commit -m "feat: targeted config edit primitives with backup and atomic writ
 **Interfaces:**
 - Consumes: `ConfigFile`, `ToolModelRef`, `ToolPaths` from Task 3.
 - Produces: `struct ToolAdapter` with `id`, `displayName`, `detect() -> Bool`, `currentModel() throws -> ToolModelRef?`, `providers() throws -> [String]`, `models(_ provider: String) throws -> [(id: String, name: String)]`, `setModel(_ ref: ToolModelRef) throws`.
-- Produces: `enum Tools { static func pi(_ paths: ToolPaths) -> ToolAdapter; static func all(_ paths: ToolPaths) -> [ToolAdapter] }` (only `pi` returns a real adapter here; the rest are added by Tasks 5–7).
+- Produces: `enum Tools { static func pi(_ paths: ToolPaths) -> ToolAdapter }`. Tasks 5–7 each add one more factory; Task 8 adds `all` and `detected`. Do not define `all` here.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -209,7 +228,9 @@ SelfTest.check("pi preserved the rest of settings.json",
 
 - [ ] **Step 4: Run to verify it passes.**
 
-- [ ] **Step 5: Set `chmod 444` on the staged copy of `piSettings` and assert the write fails cleanly.** Review Focus #1.
+- [ ] **Step 5: Make the staged config unwritable and assert the write fails cleanly.** Review Focus #1.
+
+`chmod 444` on the file itself is **not** sufficient: `rename(2)` only needs write permission on the *parent directory*, so the atomic write would still succeed and the test would pass for the wrong reason. Instead stage `pi-settings.json` inside its own subdirectory, `chmod 0555` that subdirectory, and restore `0755` afterwards.
 
 ```swift
 SelfTest.check("read-only config reports an error",
@@ -257,7 +278,7 @@ SelfTest.check("opencode preserved its provider block",
 
 - [ ] **Step 3: Implement the opencode adapter**
 
-`detect` is file-exists on `opencodeConfig` or PATH. `currentModel` reads the top-level `model` and parses it. `providers` is the union of the config's `provider` keys and `opencodeAuth` keys. `models` returns the OpenRouter catalog for provider `openrouter` (Task 10 wires the catalog; until then return the configured models for that provider) and an empty list otherwise, since the UI accepts free text. `setModel` writes `"provider/model"` to the top-level `model` key.
+`detect` is file-exists on `opencodeConfig` or PATH. `currentModel` reads the top-level `model` and parses it. `providers` is the union of the config's `provider` keys and `opencodeAuth` keys. `models` returns the model ids already configured for that provider in the config, and an empty list otherwise, since the UI accepts free text. Do **not** call `OpenRouter` from this file — it does not exist until Task 10; Task 11 injects the catalog for provider `openrouter`. `setModel` writes `"provider/model"` to the top-level `model` key.
 
 - [ ] **Step 4: Run to verify it passes.**
 
@@ -371,13 +392,21 @@ git commit -m "feat: clawdbot adapter delegating writes to its JSON5-safe CLI"
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
+let root = (cfg.piSettings as NSString).deletingLastPathComponent
+var headless = cfg
+headless.clawdbotDir = root + "/no-such-clawdbot"
+headless.clawdbotBin = root + "/no-such-bin"
 SelfTest.check("undetected tools are excluded",
-    !Tools.detected(cfg).contains { $0.id == "clawdbot" } || FileManager.default.fileExists(atPath: cfg.clawdbotDir))
+    !Tools.detected(headless).contains { $0.id == "clawdbot" })
+SelfTest.check("detected tools are included",
+    Tools.detected(cfg).contains { $0.id == "clawdbot" })
 SelfTest.check("a configured tool reports its ref",
     try Tools.pi(cfg).state() == .configured(ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash")))
 SelfTest.check("hermes reports unset rather than throwing",
     try Tools.hermes(cfg).state() == .unset)
 ```
+
+Both registry checks must be real assertions. A check written as `<condition> || <something already true>` can never fail and is a defect, not a test.
 
 - [ ] **Step 2: Run to verify it fails.**
 
@@ -408,7 +437,7 @@ git commit -m "feat: tool detection registry with explicit unset state"
 
 - [ ] **Step 1: Write the failing tests**
 
-Use a test-only account so the real key is never touched.
+Use a test-only account so the real key is never touched. `Tests/fixtures/pi-auth.json` must contain the literal placeholder `"access": "sk-or-v1-selftest-fixture-not-a-real-key"` so the import assertion has a real expected value.
 
 ```swift
 SelfTest.check("keychain round-trips", {
@@ -418,8 +447,12 @@ SelfTest.check("keychain round-trips", {
 Keychain.delete(account: "selftest")
 SelfTest.check("keychain delete works", Keychain.get(account: "selftest") == nil)
 SelfTest.check("import finds the pi openrouter credential",
-    Keychain.importFromPi(cfg)?.hasPrefix("sk-or-v1-") == true || true)   // fixture may hold a placeholder
+    Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
+SelfTest.check("import returns nil when the file is absent",
+    Keychain.importFromPi(headlessPaths) == nil)
 ```
+
+This check must compare against an expected value. A check written as `<condition> || true` can never fail and is a defect, not a test. The fixture holds a placeholder, never a real key.
 
 - [ ] **Step 2: Run to verify it fails.**
 
@@ -447,7 +480,7 @@ git commit -m "feat: keychain storage and one-click import of the existing pi ke
 **Interfaces:**
 - Produces: `struct Credits: Equatable { let totalCredits: Double; let totalUsage: Double; var remaining: Double }`.
 - Produces: `enum OpenRouterError: Error { case badStatus(Int), notJSON, missingField(String) }`.
-- Produces: `enum OpenRouter` with `static func parseCredits(_ data: Data) throws -> Credits`, `static func credits(apiKey: String) async throws -> Credits`, `static func models() async throws -> [(id: String, name: String)]`, `static let catalogPath: String`.
+- Produces: `enum OpenRouter` with `static func parseCredits(_ data: Data) throws -> Credits`, `static func credits(apiKey: String) async throws -> Credits`, `static func models() async throws -> [(id: String, name: String)]`, `static func parseCatalog(_ data: Data) throws -> [(id: String, name: String)]`, `static func loadCachedCatalog() throws -> [(id: String, name: String)]?`, `static let catalogPath: String`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -457,13 +490,15 @@ The parse function is pure, so it is the testable seam. Cases: valid body; a bod
 SelfTest.check("credits parse", try OpenRouter.parseCredits(Data(#"{"data":{"total_credits":344.11,"total_usage":327.007530314}}"#.utf8)).remaining.rounded(toPlaces: 2) == 17.10)
 SelfTest.check("missing total_usage is an error, not a zero", (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":1}}"#.utf8))) == nil)
 SelfTest.check("html error page is an error", (try? OpenRouter.parseCredits(Data("<html>502</html>".utf8))) == nil)
+SelfTest.check("a non-JSON catalog is an error, not a crash", (try? OpenRouter.parseCatalog(Data("<html>".utf8))) == nil)
+SelfTest.check("a catalog without names is an error", (try? OpenRouter.parseCatalog(Data(#"{"data":[{"id":"x"}]}"#.utf8))) == nil)
 ```
 
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the client**
 
-`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `models` fetches `https://openrouter.ai/api/v1/models`, writes `[{"id","name"}]` to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours. Add `Double.rounded(toPlaces:)` as a small helper in this file.
+`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `parseCatalog` decodes `data[]` entries and throws unless every entry has both `id` and `name`. `models` fetches `https://openrouter.ai/api/v1/models`, writes the parsed entries to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours. `loadCachedCatalog` returns `nil` when the cache file is absent or stale, and a parse failure must surface as a thrown error rather than a silent empty list. Add `Double.rounded(toPlaces:)` as a small helper in this file.
 
 - [ ] **Step 4: Run to verify it passes.**
 
@@ -484,7 +519,7 @@ git commit -m "feat: openrouter credits client with cached model catalog"
 
 **Interfaces:**
 - Consumes: `Tools.detected`, `OpenRouter`, `Keychain`, `AppConfig`.
-- Produces: `struct AppConfig: Codable` with `refreshMinutes: Int = 10`, `launchAtLogin: Bool = false`, `hiddenTools: [String] = []`, `binaryPathOverrides: [String: String] = [:]`, `static let path: String`, `static func load() -> AppConfig`, `func save() throws`.
+- Produces: `struct AppConfig: Codable` with `refreshMinutes: Int = 10`, `launchAtLogin: Bool = false`, `hiddenTools: [String] = []`, `binaryPathOverrides: [String: String] = [:]`, `static let path: String`, `static func load(from path: String = AppConfig.path) -> AppConfig`, `func save(to path: String = AppConfig.path) throws`. The path parameter is what keeps the selftest off the real settings file.
 - Produces: `final class AppState: ObservableObject` with `@Published var remaining: Double?`, `lastUpdated: Date?`, `errorText: String?`, `rows: [ToolRow]`, and `func refresh() async`, `func setModel(_ ref: ToolModelRef, for adapterID: String)`.
 - Produces: `struct ToolRow { let id: String; let displayName: String; let state: ToolState; let providers: [String]; let writable: Bool }`.
 - Produces: `struct PopoverView: View { @ObservedObject var state: AppState }`.
@@ -492,11 +527,14 @@ git commit -m "feat: openrouter credits client with cached model catalog"
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
-let cfgFile = try AppConfig.load()
-SelfTest.check("app settings round-trip", { var c = cfgFile; c.refreshMinutes = 42; try c.save(); return AppConfig.load().refreshMinutes == 42 }())
-SelfTest.check("a corrupt settings file falls back to defaults", { try? "not json".write(toFile: AppConfig.path, atomically: true, encoding: .utf8); return AppConfig.load().refreshMinutes == 10 }())
-SelfTest.check("a non-JSON catalog file is ignored rather than crashing", (try? OpenRouter.loadCachedCatalog()) == nil || true)
+let root = (cfg.piSettings as NSString).deletingLastPathComponent
+let settingsPath = root + "/app-config.json"
+SelfTest.check("app settings round-trip", { var c = AppConfig.load(from: settingsPath); c.refreshMinutes = 42; try c.save(to: settingsPath); return AppConfig.load(from: settingsPath).refreshMinutes == 42 }())
+SelfTest.check("a corrupt settings file falls back to defaults", { try? "not json".write(toFile: settingsPath, atomically: true, encoding: .utf8); return AppConfig.load(from: settingsPath).refreshMinutes == 10 }())
+SelfTest.check("the selftest never targets the real settings path", settingsPath != AppConfig.path)
 ```
+
+Every selftest write must go to the temp directory. The selftest must never write to `~/.pi`, `~/.config`, `~/.hermes`, `~/.clawdbot`, or `~/Library`.
 
 - [ ] **Step 2: Run to verify it fails.**
 
@@ -509,6 +547,8 @@ Load returns defaults for every field when the file is absent or undecodable; sa
 One scrolling `PopoverView`: header (`$17.10`, fetched-at time, Refresh button), one `ToolRow` per detected tool showing `name — provider/model` or `unset` with a Change… control, and a collapsed Settings disclosure holding the API key field with Test key, the refresh interval field, a launch-at-login toggle, and the tool path overrides. On any fetch failure set `errorText` and the title to `—` while keeping `remaining` and `lastUpdated` so the popover can show the last known balance with its age.
 
 The status item title is set from `AppState`: `$X.YZ` or `—`. The refresh timer runs every `refreshMinutes`, plus once at launch. Launch at login uses `SMAppService.mainApp.register()`/`unregister()`, driven by the toggle.
+
+**Catalog wiring.** `ToolAdapter.models` is synchronous and `OpenRouter.models()` is async, so they cannot be connected directly. At each refresh, fetch the catalog once asynchronously into a module-level cache; each adapter's `models` closure reads that cache synchronously and falls back to the tool's own configured models when the cache is empty. A failed catalog fetch must never fail the whole refresh.
 
 - [ ] **Step 5: Run to verify it passes, then verify by hand**
 
