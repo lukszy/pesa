@@ -628,17 +628,27 @@ git commit -m "feat: clawdbot adapter delegating writes to its JSON5-safe CLI"
 
 **Interfaces:**
 - Produces: `Tools.all(_ paths: ToolPaths) -> [ToolAdapter]` returning all four.
-- Produces: `Tools.detected(_ adapters: [ToolAdapter]) -> [ToolAdapter]`, the pure filter, plus `Tools.detected(_ paths: ToolPaths) -> [ToolAdapter]` which is `detected(all(paths))`. Splitting the filter out is what makes it testable: the four real adapters all fall back to `PATH`, so a check that relies on a staged tool being absent cannot fail on a machine where that tool is installed, which is the machine this runs on. Calling `Tools.clawdbot(paths)` with its default candidate list is correct here.
+- Produces: `Tools.detected(_ adapters: [ToolAdapter]) -> [ToolAdapter]`, the pure filter, plus `Tools.detected(_ paths: ToolPaths) -> [ToolAdapter]` which is `detected(all(paths))`. Splitting the filter out makes it testable with synthetic adapters, which matters because **pi, opencode, and clawdbot** each fall back to `PATH` and are all installed on the reference machine — so a staged-absence check cannot work for those three. Hermes is the exception and is what makes the production overload testable: its `detect()` is file-existence only, with no `PATH` fallback, so pointing its config at a missing file genuinely makes it undetected on any machine. Calling `Tools.clawdbot(paths)` with its default candidate list is correct here.
 - Produces: `enum ToolState { case missing, unset, configured(ToolModelRef) }` and `ToolAdapter.state() throws -> ToolState`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
-// Detection falls back to PATH for every adapter, and on the reference machine pi,
-// opencode and clawdbot are all installed. A staged-absence check therefore cannot fail
-// here: "not detected" is unachievable when the real binary is on PATH or in a standard
-// location. Test the filter with synthetic adapters instead, so the check is
-// machine-independent and cannot silently pass on a developer's machine only.
+// pi, opencode and clawdbot each fall back to PATH and are all installed on the reference
+// machine, so for those three a staged-absence check cannot fail. Hermes is the exception:
+// its detect() is file-existence only, with no PATH fallback, so an absent config file makes
+// it genuinely undetected on any machine. That is also what covers the production overload
+// `Tools.detected(_ paths:)`, which Tasks 11 and 12 actually call — without it, a wrong
+// delegation there would ship unnoticed.
+var headless = cfg
+headless.hermesConfig = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-such-hermes.yaml"
+SelfTest.check("the production registry excludes a tool whose config is absent",
+    !Tools.detected(headless).contains { $0.id == "hermes" })
+SelfTest.check("the production registry still includes a tool whose config is present",
+    Tools.detected(cfg).contains { $0.id == "hermes" })
+
+// The pure filter, tested with synthetic adapters so the assertion does not depend on what
+// happens to be installed on the machine running the suite.
 let yes = ToolAdapter(id: "yes", displayName: "yes", detect: { true }, currentModel: { nil },
                       providers: { [] }, models: { _ in [] }, setModel: { _ in })
 let no = ToolAdapter(id: "no", displayName: "no", detect: { false }, currentModel: { nil },
