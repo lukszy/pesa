@@ -701,7 +701,9 @@ git commit -m "feat: tool detection registry with explicit unset state"
 - Modify: `Sources/SelfTest.swift`
 
 **Interfaces:**
-- Produces: `enum Keychain` with `static let service`, `static func get(account: String) -> String?`, `static func set(_ value: String, account: String) throws`, `static func delete(account: String)`.
+- Produces: `enum Keychain` with `static let service`, `static func get(account: String) -> String?`, `static func set(_ value: String, account: String) throws`, `static func delete(account: String) throws`.
+
+**`delete` throws, and tolerates `errSecItemNotFound`.** An earlier version of this brief declared `delete` with no error path, which the implementer correctly matched — but that means a failed removal reports success, and "I deleted my API key" silently leaving the secret in place is exactly the kind of thing a user cannot verify for themselves. So it throws. It must **not** throw when the account simply has no item: removing an already-removed key is a no-op, not an error, and treating `errSecItemNotFound` as a failure would make a second clear-key action fail spuriously.
 - Produces: `static func importFromPi(_ paths: ToolPaths) -> String?` returning the OpenRouter credential from `piAuth` when one is present.
 
 **`set` must upsert.** Verified against the real Keychain: `SecItemAdd` on an account that already has an item returns `-25299` (`errSecDuplicateItem`). So a plain `SecItemAdd` implementation fails the second time the user changes the API key — and a single leftover item from an interrupted run would fail this suite from then on. Delete-then-add or `SecItemUpdate`; either is fine, a failing re-set is not.
@@ -727,8 +729,17 @@ do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catc
 SelfTest.check("keychain set overwrites an existing value",
     !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
 
-Keychain.delete(account: "selftest")
+var deleteThrew = false
+do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
+SelfTest.check("keychain delete succeeds", !deleteThrew)
 SelfTest.check("keychain delete works", Keychain.get(account: "selftest") == nil)
+
+// Removing a key that is already gone is a no-op, not an error — otherwise a second
+// clear-key action would fail spuriously with nothing to remove.
+var absentDeleteThrew = false
+do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
+SelfTest.check("deleting an absent key does not throw", !absentDeleteThrew)
+
 SelfTest.check("import finds the pi openrouter credential",
     Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
 
