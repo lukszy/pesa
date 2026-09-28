@@ -162,6 +162,14 @@ Behaviour:
 - A tool that is not detected is **hidden**, not shown greyed out.
 - A detected tool with no model configured (hermes and clawdbot on the
   reference machine) shows `unset` and a Set button.
+- The clawdbot CLI is located by searching a list of standard absolute paths
+  (`/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`) before falling back to
+  `PATH`, and the resolved path is used for every invocation. An app launched
+  from Finder receives a minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), so a
+  `PATH`-only lookup would never find a CLI installed by Homebrew or npm — the
+  clawdbot row would be permanently read-only in the shipped app, which is the
+  opposite of the point. This is the one adapter that must *run* a binary rather
+  than read a file, so it is the only one where `PATH` matters.
 - Provider dropdowns list only providers the tool actually has configured or
   authenticated, so a local endpoint such as `omlx` or `ollama` is selectable.
 - Model dropdowns are searchable and **always accept free text**, so

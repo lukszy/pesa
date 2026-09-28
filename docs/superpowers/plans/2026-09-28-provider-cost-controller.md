@@ -511,6 +511,7 @@ git commit -m "feat: hermes adapter with YAML scalar edits"
 
 **Interfaces:**
 - Produces: `Tools.clawdbot(_ paths: ToolPaths) -> ToolAdapter`.
+- Produces: `static func resolveClawdbotBinary(preferred: String, candidates: [String]) -> String?` on `enum Tools` — returns `preferred` if it is executable, otherwise the first executable entry of `candidates`, otherwise `nil`. Pure, so it is testable without running anything.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -534,11 +535,28 @@ SelfTest.check("clawdbot created a backup", FileManager.default.fileExists(atPat
 
 Also stage a copy whose `agents.defaults.model` is a plain string, and assert it is read correctly.
 
+**Binary resolution — required, because this is the one adapter that must run a binary.**
+
+```swift
+// An app launched from Finder gets a minimal PATH, so absolute candidates must be searched.
+let stub = cfg.clawdbotBin
+SelfTest.check("clawdbot binary resolves from the preferred path when executable",
+    Tools.resolveClawdbotBinary(preferred: stub, candidates: ["/nonexistent/a"]) == stub)
+SelfTest.check("clawdbot binary falls back to a candidate list",
+    Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot", candidates: ["/nonexistent/a", stub]) == stub)
+SelfTest.check("clawdbot binary returns nil when nothing is executable",
+    Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot", candidates: ["/nonexistent/a"]) == nil)
+```
+
+Each of those can fail, and together they pin all three branches: preferred wins, candidate fallback works, and a total miss returns `nil` so the adapter can degrade instead of launching something arbitrary.
+
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the clawdbot adapter**
 
-`detect` is the state directory existing or `clawdbot` on PATH. `currentModel` reads `agents.defaults.model`, accepting either a string or an object with `primary`. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
+`detect` is the state directory existing or a resolvable `clawdbot` binary. `currentModel` reads `agents.defaults.model`, accepting either a string or an object with `primary`. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
+
+**Binary lookup.** Build the candidate list as `paths.clawdbotBin`, then `/usr/local/bin/clawdbot`, `/opt/homebrew/bin/clawdbot`, then `~/.local/bin/clawdbot`, and only as a last resort scan `PATH`. Route every invocation through `resolveClawdbotBinary(preferred:candidates:)` rather than calling `Process` with a bare name, so the Finder-launch case works and so the resolution is testable on its own. Store the resolved path, and if resolution returns `nil`, `models` returns an empty list and `setModel` throws — never fall back to launching a bare `clawdbot`, which would produce a confusing launch failure instead of a clear one.
 
 - [ ] **Step 4: Run to verify it passes.**
 
