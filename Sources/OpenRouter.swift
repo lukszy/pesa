@@ -285,6 +285,18 @@ enum OpenRouter {
         return providers
     }
 
+    /// The `/providers` entry for an endpoint's provider slug. That list keys on
+    /// the base slug (`google-vertex`) while an endpoint's `tag` can carry a
+    /// region or variant suffix (`google-vertex/global`), so a miss falls back
+    /// to the segment before the first `/`. Without it those rows render no
+    /// privacy/ToS links. Pure, so the fallback is pinned by a check.
+    static func providerInfo(forSlug slug: String,
+                             in providers: [String: (privacy: String?, tos: String?)])
+        -> (privacy: String?, tos: String?)? {
+        if let exact = providers[slug] { return exact }
+        return providers[String(slug.prefix(while: { $0 != "/" }))]
+    }
+
     /// One authenticated GET, status-checked. Shared by the three endpoint
     /// fetches so they cannot disagree about auth or error handling.
     private static func get(_ urlString: String, apiKey: String) async throws -> Data {
@@ -325,7 +337,7 @@ enum OpenRouter {
         let zdrKeys = try parseZDR(zdrData)
         let providers = try parseProviders(providersData)
         return try parseModelEndpoints(endpointsData, zdrKeys: zdrKeys).map { endpoint in
-            let provider = providers[endpoint.providerSlug]
+            let provider = providerInfo(forSlug: endpoint.providerSlug, in: providers)
             return EndpointInfo(
                 providerSlug: endpoint.providerSlug,
                 providerName: endpoint.providerName,

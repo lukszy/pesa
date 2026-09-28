@@ -137,9 +137,7 @@ enum Tools {
         ToolAdapter(
             id: "opencode",
             displayName: "opencode",
-            // SF Symbols 4 (macOS 13). "chevron.left.forwardslash.chevron.right"
-            // is SF Symbols 5, so on the 13.0 deployment target it renders blank.
-            symbol: "chevron.left.slash.chevron.right",
+            symbol: "chevron.left.forwardslash.chevron.right",
             detect: { detectOpencode(paths) },
             currentModel: { try currentOpencodeModel(paths) },
             providers: { try opencodeProviders(paths) },

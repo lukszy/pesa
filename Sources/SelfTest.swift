@@ -333,7 +333,7 @@ enum SelfTest {
             check("each adapter carries its own SF Symbol",
                   Tools.all(cfg).map { "\($0.id)=\($0.symbol)" } == [
                       "pi=circle.hexagongrid",
-                      "opencode=chevron.left.slash.chevron.right",
+                      "opencode=chevron.left.forwardslash.chevron.right",
                       "hermes=paperplane",
                   ])
 
@@ -418,7 +418,7 @@ enum SelfTest {
                               state: .configured(ToolModelRef(provider: "openrouter", model: "a/b")),
                               providers: ["openrouter"])
         let unadded = ToolRow(id: "opencode", displayName: "opencode",
-                              symbol: "chevron.left.slash.chevron.right",
+                              symbol: "chevron.left.forwardslash.chevron.right",
                               state: .configured(ToolModelRef(provider: "openai", model: "c/d")),
                               providers: ["openai"])
         let failed = ToolRow(id: "hermes", displayName: "hermes", symbol: "paperplane",
@@ -714,6 +714,14 @@ enum SelfTest {
                       && providers["together"]?.tos == "https://together.example/tos")
             check("a provider with null URLs parses as nil, not empty strings",
                   providers["openai"]?.privacy == nil && providers["openai"]?.tos == nil)
+            // `/providers` keys on the base slug, but an endpoint tag can carry
+            // a region suffix (`google-vertex/global`), so the join must fall
+            // back to the base slug or those rows lose their links.
+            check("a region-scoped tag falls back to the base provider slug",
+                  OpenRouter.providerInfo(forSlug: "together/global", in: providers)?.privacy
+                      == "https://together.example/privacy")
+            check("an unknown slug with no base entry has no provider info",
+                  OpenRouter.providerInfo(forSlug: "nobody/global", in: providers) == nil)
             check("a malformed providers body throws",
                   (try? OpenRouter.parseProviders(Data("<html>403</html>".utf8))) == nil)
 
