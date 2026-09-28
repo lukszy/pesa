@@ -512,10 +512,11 @@ git commit -m "feat: hermes adapter with YAML scalar edits"
 **Interfaces:**
 - Produces: `Tools.clawdbot(_ paths: ToolPaths) -> ToolAdapter`.
 - Produces: `static func resolveClawdbotBinary(preferred: String, candidates: [String]) -> String?` on `enum Tools` — returns `preferred` if it is executable, otherwise the first executable entry of `candidates`, otherwise `nil`. Pure, so it is testable without running anything.
+- Produces: `static func parseClawdbotModel(_ stdout: String) -> ToolModelRef?` on `enum Tools` — turns `clawdbot config get agents.defaults.model` stdout into a ref, or `nil` when there is nothing to report. Pure, so it is testable against captured CLI output without spawning anything.
 
 - [ ] **Step 1: Write the failing tests**
 
-The stub reads `$1` and `$2`: for `models list` it prints a canned `{"count":1,"models":[{"key":"anthropic/claude-opus-4-5","name":"Claude Opus 4.5 (latest)","contextWindow":200000,"available":true}]}`; for `models set` it appends the argument to `$CLAWDBOT_STUB_LOG` and rewrites the fixture's `primary`.
+The stub reads `$1` and `$2`: for `models list` it prints a canned `{"count":1,"models":[{"key":"anthropic/claude-opus-4-5","name":"Claude Opus 4.5 (latest)","contextWindow":200000,"available":true}]}`; for `config get` it prints the object form `{"primary":"anthropic/claude-opus-4-5","fallbacks":["openai/gpt-4o"]}`; for `models set` it appends the argument to `$CLAWDBOT_STUB_LOG` and rewrites the fixture's `primary`. All three branches print to stdout only.
 
 ```swift
 let cb = Tools.clawdbot(cfg)   // cfg.clawdbotBin points at the stub
@@ -550,11 +551,31 @@ SelfTest.check("clawdbot binary returns nil when nothing is executable",
 
 Each of those can fail, and together they pin all three branches: preferred wins, candidate fallback works, and a total miss returns `nil` so the adapter can degrade instead of launching something arbitrary.
 
+**Reading the model — the CLI is the JSON5-safe reader.** `clawdbot.json` is JSON5, so `JSONSerialization` fails outright on a file that contains comments — with the exact error `Expecting property name enclosed in double quotes`. Verified against the real binary and a comment-laden file. These are verbatim CLI outputs captured from it:
+
+```swift
+SelfTest.check("clawdbot parses the object form from CLI stdout",
+    Tools.parseClawdbotModel("{\n  \"primary\": \"anthropic/claude-opus-4-5\",\n  \"fallbacks\": [\n    \"openai/gpt-4o\"\n  ]\n}") == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+SelfTest.check("clawdbot parses a bare scalar from CLI stdout",
+    Tools.parseClawdbotModel("anthropic/claude-opus-4-5") == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+SelfTest.check("clawdbot reports unset for the CLI's not-found message",
+    Tools.parseClawdbotModel("Config path not found: agents.defaults.model") == nil)
+SelfTest.check("clawdbot reports unset for empty CLI output",
+    Tools.parseClawdbotModel("") == nil)
+```
+
+**End-to-end, on a config the file parser cannot read.** Write a comment-laden JSON5 document (`{ // a comment\n "agents": { "defaults": { "model": { "primary": "anthropic/claude-opus-4-5", "fallbacks": ["openai/gpt-4o"] } } } }`) into the staged temp root, point a copy of `ToolPaths` at it, and assert `currentModel()` still returns the anthropic ref. That check fails if the file parse is attempted first and its throw escapes, which is precisely the defect being fixed:
+
+```swift
+SelfTest.check("a comment-laden JSON5 config still reads through the CLI",
+    try Tools.clawdbot(json5Paths).currentModel() == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+```
+
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the clawdbot adapter**
 
-`detect` is the state directory existing or a resolvable `clawdbot` binary. `currentModel` reads `agents.defaults.model`, accepting either a string or an object with `primary`. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
+`detect` is the state directory existing or a resolvable `clawdbot` binary. `currentModel` resolves the binary, runs `clawdbot config get agents.defaults.model`, and passes stdout to `parseClawdbotModel`. The CLI is tried **first and is the authoritative reader**, because it is JSON5-safe and the file is JSON5: a direct `JSONSerialization` read of a commented config throws, and that throw must not be what the user sees. Fall back to the file parse only when the CLI is unavailable (unresolvable binary), since a comment-free config is still readable — and if the file parse also fails, report the error rather than hiding it. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
 
 **Binary lookup.** Build the candidate list as `paths.clawdbotBin`, then `/usr/local/bin/clawdbot`, `/opt/homebrew/bin/clawdbot`, then `~/.local/bin/clawdbot`, and only as a last resort scan `PATH`. Route every invocation through `resolveClawdbotBinary(preferred:candidates:)` rather than calling `Process` with a bare name, so the Finder-launch case works and so the resolution is testable on its own. Store the resolved path, and if resolution returns `nil`, `models` returns an empty list and `setModel` throws — never fall back to launching a bare `clawdbot`, which would produce a confusing launch failure instead of a clear one.
 
