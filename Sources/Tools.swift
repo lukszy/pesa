@@ -77,7 +77,7 @@ enum Tools {
             id: "clawdbot",
             displayName: "clawdbot",
             detect: { detectClawdbot(paths) },
-            currentModel: { try currentClawdbotModel(paths) },
+            currentModel: { try currentClawdbotModel(paths, binary: binary) },
             providers: { try clawdbotProviders(binary: binary) },
             models: { provider in try clawdbotModels(binary: binary, provider: provider) },
             setModel: { ref in
@@ -109,6 +109,22 @@ enum Tools {
         }
         return nil
     }
+
+    /// Turns `clawdbot config get agents.defaults.model` stdout into a ref. The
+    /// CLI emits the object form for an object config, the bare `provider/model`
+    /// scalar for a string config, and a human-readable "not found" message (or
+    /// nothing) when the key is unset. Anything unparseable is `nil`, not a
+    /// throw — reading a config must not fail on the CLI's prose.
+    static func parseClawdbotModel(_ stdout: String) -> ToolModelRef? {
+        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let data = trimmed.data(using: .utf8),
+           let raw = try? JSONSerialization.jsonObject(with: data),
+           let object = raw as? [String: Any],
+           let primary = object["primary"] as? String {
+            return ToolModelRef.parse(primary)
+        }
+        return ToolModelRef.parse(trimmed)
+    }
 }
 
 // MARK: - clawdbot
@@ -137,9 +153,16 @@ private func detectClawdbot(_ paths: ToolPaths) -> Bool {
         || isExecutableOnPath("clawdbot")
 }
 
-/// `agents.defaults.model` is either a `provider/model` string or an object
-/// whose `primary` holds one; both forms appear in the wild.
-private func currentClawdbotModel(_ paths: ToolPaths) throws -> ToolModelRef? {
+/// Reads `agents.defaults.model`. The CLI is the authoritative reader because
+/// `clawdbot.json` is JSON5: `JSONSerialization` throws on a commented file, so
+/// a direct file parse must never be what the user sees. The file parse is a
+/// fallback only for when the binary is unresolvable, where a comment-free
+/// config still reads; if it also fails, the error surfaces rather than hides.
+private func currentClawdbotModel(_ paths: ToolPaths, binary: String?) throws -> ToolModelRef? {
+    if let binary {
+        let result = try runClawdbot(binary, ["config", "get", "agents.defaults.model"])
+        return Tools.parseClawdbotModel(result.stdout)
+    }
     guard let config = try jsonObject(paths.clawdbotConfig),
           let agents = config["agents"] as? [String: Any],
           let defaults = agents["defaults"] as? [String: Any],

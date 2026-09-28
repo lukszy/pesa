@@ -299,16 +299,33 @@ enum SelfTest {
             check("clawdbot providers come from the CLI model keys",
                   providers == ["anthropic"])
 
-            // A model stored as a plain string, not an object, must still read.
+            // The CLI is the JSON5-safe reader. These are verbatim captures of
+            // its stdout; each shape is pinned separately so a parser that only
+            // handled the object form fails the scalar check and vice versa.
+            let objectForm = Tools.parseClawdbotModel(
+                "{\n  \"primary\": \"anthropic/claude-opus-4-5\",\n  \"fallbacks\": [\n    \"openai/gpt-4o\"\n  ]\n}")
+            check("clawdbot parses the object form from CLI stdout",
+                  objectForm == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+            let scalarForm = Tools.parseClawdbotModel("anthropic/claude-opus-4-5")
+            check("clawdbot parses a bare scalar from CLI stdout",
+                  scalarForm == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+            check("clawdbot reports unset for the CLI's not-found message",
+                  Tools.parseClawdbotModel("Config path not found: agents.defaults.model") == nil)
+            check("clawdbot reports unset for empty CLI output",
+                  Tools.parseClawdbotModel("") == nil)
+
             let root = (cfg.clawdbotConfig as NSString).deletingLastPathComponent
-            let stringForm = root + "/clawdbot-string.json"
-            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": \"openai/gpt-4o\"\n    }\n  }\n}\n"
-                .write(toFile: stringForm, atomically: true, encoding: .utf8)
-            var stringCfg = cfg
-            stringCfg.clawdbotConfig = stringForm
-            let stringModel = try Tools.clawdbot(stringCfg).currentModel()
-            check("clawdbot reads the string form",
-                  stringModel == ToolModelRef(provider: "openai", model: "gpt-4o"))
+            // The real config is JSON5, so JSONSerialization throws on a comment.
+            // The CLI must be tried first: this check fails if the file parse
+            // runs first and its throw escapes.
+            let json5Path = root + "/clawdbot-json5.json"
+            try "{ // a comment\n  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"anthropic/claude-opus-4-5\", \"fallbacks\": [\"openai/gpt-4o\"] } } }\n}\n"
+                .write(toFile: json5Path, atomically: true, encoding: .utf8)
+            var json5Paths = cfg
+            json5Paths.clawdbotConfig = json5Path
+            let json5Model = try Tools.clawdbot(json5Paths).currentModel()
+            check("a comment-laden JSON5 config still reads through the CLI",
+                  json5Model == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
 
             let logPath = root + "/clawdbot-set.log"
             setenv("CLAWDBOT_STUB_LOG", logPath, 1)

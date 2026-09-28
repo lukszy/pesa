@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test double for the clawdbot CLI used by --selftest. It emulates the two
+# Test double for the clawdbot CLI used by --selftest. It emulates the three
 # subcommands the adapter runs, writing only to stdout (the real CLI prints
 # certificate warnings on stderr). `models set` mirrors the real CLI's write:
 # a targeted text edit of the staged fixture, never a JSON parse-and-reserialize,
@@ -9,6 +9,9 @@ set -eu
 case "$1 $2" in
   "models list")
     printf '%s\n' '{"count":1,"models":[{"key":"anthropic/claude-opus-4-5","name":"Claude Opus 4.5 (latest)","contextWindow":200000,"available":true}]}'
+    ;;
+  "config get")
+    printf '%s\n' '{"primary":"anthropic/claude-opus-4-5","fallbacks":["openai/gpt-4o"]}'
     ;;
   "models set")
     ref="$3"
