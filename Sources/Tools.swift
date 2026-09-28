@@ -31,6 +31,30 @@ enum ToolState: Equatable {
     case configured(ToolModelRef)
 }
 
+/// The OpenRouter model catalog, fetched once per refresh by `AppState.refresh`
+/// and read synchronously by the adapters' `models` closures. Those closures
+/// cannot `await`, so the async fetch lands here and they read it as plain
+/// state. Empty until the first successful fetch; a failed fetch leaves it as
+/// it was, so the picker falls back to each tool's own configured models.
+enum CatalogCache {
+    static var entries: [(id: String, name: String)] = []
+
+    /// OpenRouter's global catalog applies only to the `openrouter` provider;
+    /// every other provider keeps the tool's own configured models. Catalog
+    /// entries come first, then the tool's own, de-duplicated by id, so a
+    /// non-empty cache never hides a locally configured model.
+    static func withCatalog(_ models: [(id: String, name: String)], provider: String)
+        -> [(id: String, name: String)] {
+        guard provider == "openrouter", !entries.isEmpty else { return models }
+        var result = entries
+        var seen = Set(result.map { $0.id })
+        for model in models where seen.insert(model.id).inserted {
+            result.append(model)
+        }
+        return result
+    }
+}
+
 enum Tools {
 
     /// Every adapter, in the order the UI presents them.
@@ -58,7 +82,7 @@ enum Tools {
             detect: { detectPi(paths) },
             currentModel: { try currentPiModel(paths) },
             providers: { try piProviders(paths) },
-            models: { provider in try piModels(paths, provider: provider) },
+            models: { provider in CatalogCache.withCatalog(try piModels(paths, provider: provider), provider: provider) },
             setModel: { ref in
                 // Two writes, not one. If the second fails the file pairs the new
                 // provider with the old model; knowingly accepted (see plan), the
@@ -76,7 +100,7 @@ enum Tools {
             detect: { detectHermes(paths) },
             currentModel: { try currentHermesModel(paths) },
             providers: { try hermesProviders(paths) },
-            models: { provider in try hermesModels(paths, provider: provider) },
+            models: { provider in CatalogCache.withCatalog(try hermesModels(paths, provider: provider), provider: provider) },
             setModel: { ref in
                 // Hermes has no CLI on this machine, so a top-level YAML scalar
                 // edit is the only write path. One line, so no torn write.
@@ -92,7 +116,7 @@ enum Tools {
             detect: { detectOpencode(paths) },
             currentModel: { try currentOpencodeModel(paths) },
             providers: { try opencodeProviders(paths) },
-            models: { provider in try opencodeModels(paths, provider: provider) },
+            models: { provider in CatalogCache.withCatalog(try opencodeModels(paths, provider: provider), provider: provider) },
             setModel: { ref in
                 // Single top-level write, unlike pi's two, so there is no
                 // torn-write concern here.
@@ -115,7 +139,7 @@ enum Tools {
             detect: { detectClawdbot(paths, binary: binary) },
             currentModel: { try currentClawdbotModel(paths, binary: binary) },
             providers: { try clawdbotProviders(binary: binary) },
-            models: { provider in try clawdbotModels(binary: binary, provider: provider) },
+            models: { provider in CatalogCache.withCatalog(try clawdbotModels(binary: binary, provider: provider), provider: provider) },
             setModel: { ref in
                 // clawdbot.json is JSON5, so the CLI's own `models set` is the
                 // only safe write path. Back up the pre-write bytes first; the
@@ -132,6 +156,14 @@ enum Tools {
                 }
             }
         )
+    }
+
+    /// Whether the adapter's write path is available. Only clawdbot needs an
+    /// external binary; without one its row is read-only, because its config is
+    /// JSON5 and only the CLI may write it.
+    static func canWrite(_ adapter: ToolAdapter, paths: ToolPaths) -> Bool {
+        guard adapter.id == "clawdbot" else { return true }
+        return resolveClawdbotBinary(candidates: clawdbotBinaryCandidates(paths)) != nil
     }
 
     /// The first executable entry of `candidates`, otherwise nil. Pure, so the
@@ -403,9 +435,10 @@ private func detectPi(_ paths: ToolPaths) -> Bool {
 }
 
 /// Whether `name` resolves to an executable on the current `PATH`. Shared by
-/// every adapter's detection. Callers put file existence first because a
-/// Finder-launched app gets a minimal `PATH`, so this lookup alone can miss an
-/// installed tool whose config exists.
+/// `detectPi` and `detectOpencode`; `detectClawdbot` uses its resolved binary
+/// and `detectHermes` is file existence only. Callers put file existence first
+/// because a Finder-launched app gets a minimal `PATH`, so this lookup alone can
+/// miss an installed tool whose config exists.
 private func isExecutableOnPath(_ name: String) -> Bool {
     let fm = FileManager.default
     for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
