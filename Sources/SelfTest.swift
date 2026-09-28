@@ -26,6 +26,7 @@ enum SelfTest {
         checkOpencodeAdapter()
         checkHermesAdapter()
         checkClawdbotAdapter()
+        checkRegistry()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -408,6 +409,57 @@ enum SelfTest {
                   Tools.parseClawdbotModel("{\"fallbacks\": [\"openai/gpt-4o\"]}") == nil)
         } catch {
             check("clawdbot adapter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the tool registry and the `missing`/`unset`/`configured`
+    /// mapping. The filter is tested with synthetic adapters, not staged paths:
+    /// every real adapter falls back to `PATH`, so a staged-absence check cannot
+    /// fail on a machine where that tool is installed. Never touches a real user
+    /// path — throwing calls are hoisted out of `check`'s non-throwing
+    /// autoclosure.
+    private static func checkRegistry() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+
+            // Detection falls back to PATH for every adapter, and on the
+            // reference machine pi, opencode and clawdbot are all installed. A
+            // staged-absence check therefore cannot fail here: "not detected" is
+            // unachievable when the real binary is on PATH or in a standard
+            // location. Test the filter with synthetic adapters instead, so the
+            // check is machine-independent and cannot silently pass on a
+            // developer's machine only.
+            let yes = ToolAdapter(id: "yes", displayName: "yes", detect: { true }, currentModel: { nil },
+                                  providers: { [] }, models: { _ in [] }, setModel: { _ in })
+            let no = ToolAdapter(id: "no", displayName: "no", detect: { false }, currentModel: { nil },
+                                 providers: { [] }, models: { _ in [] }, setModel: { _ in })
+            check("the registry filters out undetected adapters",
+                  Tools.detected([yes, no]).map(\.id) == ["yes"])
+            check("the registry keeps a detected adapter",
+                  Tools.detected([no, yes]).map(\.id) == ["yes"])
+            check("all four adapters are registered",
+                  Tools.all(cfg).map(\.id) == ["pi", "opencode", "hermes", "clawdbot"])
+
+            let missing = try no.state()
+            check("state reports missing for an undetected adapter", missing == .missing)
+            let unset = try yes.state()
+            check("state reports unset for a detected adapter with no model", unset == .unset)
+
+            let piState = try Tools.pi(cfg).state()
+            check("a configured tool reports its ref",
+                  piState == .configured(ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash")))
+            let hermesState = try Tools.hermes(cfg).state()
+            check("hermes reports unset rather than throwing", hermesState == .unset)
+
+            // An unreadable config must surface, not be quietly mapped to `.missing`.
+            let broken = ToolAdapter(id: "broken", displayName: "broken", detect: { true },
+                                     currentModel: { throw ConfigError.malformed("/nonexistent", "unreadable") },
+                                     providers: { [] }, models: { _ in [] }, setModel: { _ in })
+            var stateThrew = false
+            do { _ = try broken.state() } catch { stateThrew = true }
+            check("an unreadable config is reported, not mapped to missing", stateThrew)
+        } catch {
+            check("registry checks could not run: \(error)", false)
         }
     }
 

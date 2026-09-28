@@ -2,7 +2,7 @@ import Foundation
 
 /// One coding agent's adapter surface. Every member is a closure supplied by a
 /// `Tools.*` factory, so Tasks 5–7 can add adapters by building another value
-/// without touching this shape. Task 8 adds `state()` as an extension.
+/// without touching this shape.
 struct ToolAdapter {
     let id: String
     let displayName: String
@@ -11,9 +11,45 @@ struct ToolAdapter {
     let providers: () throws -> [String]
     let models: (_ provider: String) throws -> [(id: String, name: String)]
     let setModel: (_ ref: ToolModelRef) throws -> Void
+
+    /// The row state the UI renders from. `.missing` when the tool is not
+    /// installed, `.unset` when it is installed with no model configured, and
+    /// `.configured` otherwise. A `currentModel()` error throws rather than
+    /// folding into `.missing`, so an unreadable config is reported instead of
+    /// hidden.
+    func state() throws -> ToolState {
+        guard detect() else { return .missing }
+        guard let ref = try currentModel() else { return .unset }
+        return .configured(ref)
+    }
+}
+
+/// What a tool's config currently says, once detection has run.
+enum ToolState: Equatable {
+    case missing
+    case unset
+    case configured(ToolModelRef)
 }
 
 enum Tools {
+
+    /// Every adapter, in the order the UI presents them.
+    static func all(_ paths: ToolPaths) -> [ToolAdapter] {
+        [pi(paths), opencode(paths), hermes(paths), clawdbot(paths)]
+    }
+
+    /// The registry's filter, split out from `all` so it is testable with
+    /// synthetic adapters: every real adapter's `detect()` falls back to `PATH`,
+    /// so a check relying on a staged tool being absent cannot fail on a machine
+    /// where that tool is installed.
+    static func detected(_ adapters: [ToolAdapter]) -> [ToolAdapter] {
+        adapters.filter { $0.detect() }
+    }
+
+    /// Production entry point: only the installed tools, in `all`'s order.
+    static func detected(_ paths: ToolPaths) -> [ToolAdapter] {
+        detected(all(paths))
+    }
 
     static func pi(_ paths: ToolPaths) -> ToolAdapter {
         ToolAdapter(
