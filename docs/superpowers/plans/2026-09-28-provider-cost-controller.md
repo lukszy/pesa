@@ -511,7 +511,8 @@ git commit -m "feat: hermes adapter with YAML scalar edits"
 
 **Interfaces:**
 - Produces: `Tools.clawdbot(_ paths: ToolPaths) -> ToolAdapter`.
-- Produces: `static func resolveClawdbotBinary(preferred: String, candidates: [String]) -> String?` on `enum Tools` — returns `preferred` if it is executable, otherwise the first executable entry of `candidates`, otherwise `nil`. Pure, so it is testable without running anything.
+- Produces: `Tools.clawdbot(_ paths: ToolPaths, candidates: [String]? = nil) -> ToolAdapter`. `candidates` defaults to `nil`, meaning the real search list; injecting a list is what makes the file-parse fallback reachable from a check, because otherwise the adapter resolves the stub and the fallback is dead code.
+- Produces: `static func resolveClawdbotBinary(candidates: [String]) -> String?` on `enum Tools` — returns the first executable entry, otherwise `nil`. One list, not a preferred-plus-rest pair, so the adapter's search list and the check's list are the same shape. Pure, so it is testable without running anything.
 - Produces: `static func parseClawdbotModel(_ stdout: String) -> ToolModelRef?` on `enum Tools` — turns `clawdbot config get agents.defaults.model` stdout into a ref, or `nil` when there is nothing to report. Pure, so it is testable against captured CLI output without spawning anything.
 
 - [ ] **Step 1: Write the failing tests**
@@ -541,12 +542,42 @@ Also stage a copy whose `agents.defaults.model` is a plain string, and assert it
 ```swift
 // An app launched from Finder gets a minimal PATH, so absolute candidates must be searched.
 let stub = cfg.clawdbotBin
-SelfTest.check("clawdbot binary resolves from the preferred path when executable",
-    Tools.resolveClawdbotBinary(preferred: stub, candidates: ["/nonexistent/a"]) == stub)
-SelfTest.check("clawdbot binary falls back to a candidate list",
-    Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot", candidates: ["/nonexistent/a", stub]) == stub)
+SelfTest.check("clawdbot binary resolves from the first candidate when executable",
+    Tools.resolveClawdbotBinary(candidates: [stub, "/nonexistent/a"]) == stub)
+SelfTest.check("clawdbot binary falls back past a non-executable candidate",
+    Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a", stub]) == stub)
 SelfTest.check("clawdbot binary returns nil when nothing is executable",
-    Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot", candidates: ["/nonexistent/a"]) == nil)
+    Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a"]) == nil)
+
+// The file-parse fallback is the path taken when no CLI can be launched — the read-only
+// case the spec mandates. Without an injected list it is unreachable from a check, because
+// the real search list resolves the stub.
+var fallback = cfg
+SelfTest.check("with no runnable CLI, the object form is read from the file",
+    try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"]).currentModel()
+        == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+
+let stringForm = (cfg.piSettings as NSString).deletingLastPathComponent + "/clawdbot-string.json"
+try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": \"anthropic/claude-opus-4-5\"\n    }\n  }\n}\n"
+    .write(toFile: stringForm, atomically: true, encoding: .utf8)
+fallback.clawdbotConfig = stringForm
+SelfTest.check("with no runnable CLI, the string form is read from the file",
+    try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"]).currentModel()
+        == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+
+// "if the file parse also fails, report the error rather than hiding it" — so this must
+// throw. `(try? …) == nil` would pass on a silent unset too and is not an acceptable check.
+let broken = (cfg.piSettings as NSString).deletingLastPathComponent + "/clawdbot-broken.json"
+try "{ not json".write(toFile: broken, atomically: true, encoding: .utf8)
+fallback.clawdbotConfig = broken
+var unreadableThrew = false
+do { _ = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"]).currentModel() }
+catch { unreadableThrew = true }
+SelfTest.check("an unreadable config with no runnable CLI reports an error, not unset", unreadableThrew)
+
+// An object without a `primary` string must read as unset, not as a garbage scalar ref.
+SelfTest.check("clawdbot reports unset for an object with no primary",
+    Tools.parseClawdbotModel("{\"fallbacks\": [\"openai/gpt-4o\"]}") == nil)
 ```
 
 Each of those can fail, and together they pin all three branches: preferred wins, candidate fallback works, and a total miss returns `nil` so the adapter can degrade instead of launching something arbitrary.
@@ -575,7 +606,7 @@ SelfTest.check("a comment-laden JSON5 config still reads through the CLI",
 
 - [ ] **Step 3: Implement the clawdbot adapter**
 
-`detect` is the state directory existing or a resolvable `clawdbot` binary. `currentModel` resolves the binary, runs `clawdbot config get agents.defaults.model`, and passes stdout to `parseClawdbotModel`. The CLI is tried **first and is the authoritative reader**, because it is JSON5-safe and the file is JSON5: a direct `JSONSerialization` read of a commented config throws, and that throw must not be what the user sees. Fall back to the file parse only when the CLI is unavailable (unresolvable binary), since a comment-free config is still readable — and if the file parse also fails, report the error rather than hiding it. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
+`detect` is the state directory existing or a **resolved** `clawdbot` binary — use the same search list the adapter uses, not a `PATH`-only lookup. A Finder-launched app with clawdbot installed at `/usr/local/bin` and no config directory must still report detected, because the adapter can in fact run it. `currentModel` resolves the binary, runs `clawdbot config get agents.defaults.model`, and passes stdout to `parseClawdbotModel`. The CLI is tried **first and is the authoritative reader**, because it is JSON5-safe and the file is JSON5: a direct `JSONSerialization` read of a commented config throws, and that throw must not be what the user sees. Fall back to the file parse only when resolution returns `nil`, handling both the object form (`agents.defaults.model.primary`) and the string form (`agents.defaults.model` as a scalar). If the file parse also fails, **throw** rather than reporting `nil`, so an unreadable config is reported and not hidden as unset. `parseClawdbotModel` must return `nil` for anything that is not a model reference — including an object with no `primary` string, which must not fall through to the scalar branch and produce a ref built from JSON punctuation. `models` runs `clawdbot models list --json` via `Process`, parses stdout only (stderr carries cert warnings), and returns `key`/`name`. `setModel` runs `clawdbot models set <qualified>` **and** performs `ConfigFile.backup` first; it never rewrites the JSON5 file itself. If the binary cannot be launched, `setModel` throws `ConfigError.write` with the reason, so the UI shows a read-only row.
 
 **Binary lookup.** Build the candidate list as `paths.clawdbotBin`, then `/usr/local/bin/clawdbot`, `/opt/homebrew/bin/clawdbot`, then `~/.local/bin/clawdbot`, and only as a last resort scan `PATH`. Route every invocation through `resolveClawdbotBinary(preferred:candidates:)` rather than calling `Process` with a bare name, so the Finder-launch case works and so the resolution is testable on its own. Store the resolved path, and if resolution returns `nil`, `models` returns an empty list and `setModel` throws — never fall back to launching a bare `clawdbot`, which would produce a confusing launch failure instead of a clear one.
 
