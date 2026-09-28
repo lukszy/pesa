@@ -242,7 +242,8 @@ SelfTest.check("an absent JSON key is inserted, not ignored",
 SelfTest.check("inserting the key kept the existing keys",
     (try ConfigFile.read(scratch)).contains("\"theme\": \"dark\""))
 
-// The key must be matched at column 0 only, so a nested key of the same name survives.
+// The key must be matched at the document's top-level indentation and never deeper,
+// so a nested key of the same name survives.
 let nested = (cfg.piSettings as NSString).deletingLastPathComponent + "/nested-model.json"
 try "{\n  \"model\": \"top/one\",\n  \"provider\": {\n    \"omlx\": {\n      \"model\": \"nested/two\"\n    }\n  }\n}\n"
     .write(toFile: nested, atomically: true, encoding: .utf8)
@@ -252,7 +253,7 @@ SelfTest.check("the top-level key took the new value", nestedAfter.contains("\"m
 SelfTest.check("the nested model key is untouched", nestedAfter.contains("\"model\": \"nested/two\""))
 ```
 
-Beyond the checks shown above, the suite must also cover: the **absent** top-level JSON key insertion path; a nested key of the same name surviving a write; the **absent YAML key** insertion path (Task 6 depends on this — hermes reports `unset` before the write and configured after it); and the written file **keeping its original POSIX mode**, because a temp-file-and-rename write otherwise resets a `0600` config to the default.
+Beyond the checks shown above, the suite must also cover two paths the brief's list does not spell out: the **absent YAML key** insertion path (Task 6 depends on this — hermes reports `unset` before the write and configured after it), and the written file **keeping its original POSIX mode**, because a temp-file-and-rename write otherwise resets a `0600` config to the default.
 
 - [ ] **Step 2: Run to verify it fails**
 
