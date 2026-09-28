@@ -881,6 +881,7 @@ SelfTest.check("an older settings file keeps its values and gains the new defaul
     try? "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
     let c = AppConfig.load(from: settingsPath)
     return c.refreshMinutes == 33 && c.showMoneyInMenuBar && c.showIconInMenuBar && !c.notifyBelowEnabled
+        && c.hiddenTools.isEmpty && c.binaryPathOverrides.isEmpty && !c.launchAtLogin && c.notifyBelowAmount == 5.0
 }())
 SelfTest.check("defaults show the money and icon and leave alerts off", {
     let c = AppConfig.load(from: root + "/config-that-does-not-exist.json")
@@ -895,6 +896,8 @@ SelfTest.check("icon hidden renders the money alone", MenuBarPresentation.of(sho
 SelfTest.check("both hidden still renders something clickable", { let p = MenuBarPresentation.of(showMoney: false, showIcon: false, balance: 17.1, error: false); return p.text != nil || p.symbol != nil }())
 SelfTest.check("an error renders the em dash", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true) == (text: "—", symbol: "dollarsign.circle"))
 SelfTest.check("a balance that was never fetched renders no money text", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+SelfTest.check("money shown, icon hidden and no balance yet still renders the icon", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+SelfTest.check("money shown, icon hidden and an error still renders the money", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: true) == (text: "—", symbol: nil))
 
 // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
 SelfTest.check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))
@@ -916,13 +919,17 @@ Every selftest write must go to the temp directory. The selftest must never writ
 
 Load returns defaults for every field when the file is absent or undecodable, and `load` must never throw. Save writes pretty-printed JSON.
 
-**Decode field by field — this is the whole forward-compatibility requirement.** `AppConfig` is declared `Codable`, but a *synthesised* `init(from:)` throws when any key is missing. That would mean an older settings file fails to decode as a whole, `load` falls back to defaults, and every setting the file *did* contain is silently reset — the exact failure Review Focus #6 exists to prevent, and one that will really happen because this app owns this file and its schema is growing. So implement `init(from:)` with `decodeIfPresent(…​) ?? default` for **every** field, filling only what is absent. The brief's `an older settings file keeps its values and gains the new defaults` check is what pins this: it writes `{"refreshMinutes": 33}` and requires `refreshMinutes == 33` *and* the new fields at their defaults. Do not satisfy it by catching a decode failure, which loses the values.
+**Decode field by field — this is the whole forward-compatibility requirement.** `AppConfig` is declared `Codable`, but a *synthesised* `init(from:)` throws when any key is missing. That would mean an older settings file fails to decode as a whole, `load` falls back to defaults, and every setting the file *did* contain is silently reset — the exact failure Review Focus #6 exists to prevent, and one that will really happen because this app owns this file and its schema is growing. So implement `init(from:)` with `decodeIfPresent(…​) ?? default` for **every** field, filling only what is absent. The brief's `an older settings file keeps its values and gains the new defaults` check is what pins this: it writes `{"refreshMinutes": 33}` and requires `refreshMinutes == 33`, the new fields at their defaults, and the two collection fields empty. Do not satisfy it by catching a decode failure, which loses the values.
+
+**A mistyped value must also cost only its own field.** `decodeIfPresent` still throws on a present-but-wrong type — `{"refreshMinutes": "10"}` — and `load`'s `try?` would turn that into a whole-struct failure and a full reset, which is the same silent loss by a different trigger. Decode as `(try? container.decodeIfPresent(Int.self, forKey: .refreshMinutes)) ?? 10`: a bad value falls back to that field's default and every other setting survives.
+
+**`save` writes atomically** — `try encoder.encode(self).write(to: URL(fileURLWithPath: path), options: .atomic)`. This project already requires atomic writes for the third-party configs it edits, so the app's own settings file should not be exempt: a crash or a full disk mid-write would otherwise leave truncated JSON, and the next `load` would silently return defaults, losing every preference. The app must not be able to lose its own settings through a write it performed itself.
 
 - [ ] **Step 4: Implement `MenuBarPresentation` and `BalanceAlert` in `Sources/UI.swift`**
 
 `MenuBarPresentation.of` formats the balance as `String(format: "$%.2f", …)`. Its rules, in order:
 
-1. `symbol` is `"dollarsign.circle"` when `showIcon` is true, and `nil` when it is false — **unless** `showMoney` is also false, in which case `symbol` is `"dollarsign.circle"` regardless. A status item with neither text nor image has nothing to click, which would leave the app running but unreachable, so the last-possible-toggle case must still render.
+1. **The invariant is "if `text` is nil, the symbol is present" — and it must be enforced as logic, not left to hold for the inputs the checks happen to use.** A status item with neither text nor image has nothing to click, which leaves the app running but unreachable. Computed naively as "the icon shows unless `showIcon` is false" this rule silently breaks for money-on / icon-off / no-balance-yet: `text` is nil and the icon is suppressed, so nothing renders. That is reachable in practice, because a fetch in flight leaves `error` false and `balance` nil. Derive it from `text` instead: `let symbol: String? = (showIcon || text == nil) ? "dollarsign.circle" : nil`, after computing `text`. Then every one of the twelve combinations renders something. Add the missing check for money-on / icon-off / balance-nil, because the checks as originally listed all pass `showIcon: true` on the never-fetched case and so cannot detect this.
 2. `text` is `nil` when `showMoney` is false; `"—"` when `error` is true; `nil` when the balance has never been fetched; otherwise the formatted balance.
    A never-fetched balance must render nothing rather than `$0.00`, which would be a lie about the account.
 
