@@ -937,6 +937,12 @@ git commit -m "feat: settings model, menu bar presentation and balance-alert dec
 - Produces: `struct ToolRow { let id: String; let displayName: String; let state: ToolState; let providers: [String]; let writable: Bool }`.
 - Produces: `struct PopoverView: View { @ObservedObject var state: AppState }`.
 
+**Three requirements specific to this task.**
+
+1. **`AppState` is `@MainActor`.** Its `@Published` properties are mutated from a timer callback and from `URLSession` completions, neither of which runs on the main thread. Mutating observable state off the main thread makes SwiftUI updates undefined and can crash; annotate the class `@MainActor` (or hop explicitly) and keep every mutation of `remaining` / `lastUpdated` / `errorText` / `rows` on the main actor. This is the most likely real defect in this task.
+2. **`SMAppService.mainApp.register()` throws when the process is not a bundled app.** Running `./.build/ProviderCostController` directly is exactly that case, so the launch-at-login toggle must surface the failure rather than crash or silently do nothing — and the same applies to `unregister()`. The real path is the `.app` built by `scripts/build-app.sh`; verify the toggle there, and expect the direct-binary run to report an error rather than pretend to succeed.
+3. **This task adds no new automated checks, and must not invent one.** The logic worth asserting — the menu bar presentation rules and the balance-crossing rule — was factored into pure functions in Task 11 precisely because that part is testable, and it is already covered. A check added here could only assert something about a view or a notification, which the suite cannot meaningfully observe, so it would necessarily be a check that cannot fail. The regression bar for this task is that the existing suite still passes, plus the manual verification below. Do not weaken or delete an existing check to accommodate the UI.
+
 - [ ] **Step 1: Add the notification framework to the build**
 
 `scripts/build.sh` must link `-framework UserNotifications`, because `UserNotifications` is not currently in its framework list and the build will fail without it. Keep the existing flags and target unchanged.
