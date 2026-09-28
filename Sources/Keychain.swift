@@ -7,6 +7,16 @@ import Security
 enum Keychain {
     static let service = "provider-cost-controller"
 
+    /// The single "a key is present" rule: a stored value only counts when it
+    /// is non-nil **and** non-empty. `init` used to accept a merely non-nil
+    /// value while `refresh()` also required non-empty, so a stored-but-empty
+    /// key made Settings claim a key existed while the usage line vanished.
+    /// Pure, so it is checked offline against literals.
+    static func isUsableKey(_ key: String?) -> Bool {
+        guard let key else { return false }
+        return !key.isEmpty
+    }
+
     /// Error carrying only the opaque `OSStatus`; never the secret.
     struct Failure: Error {
         let status: OSStatus

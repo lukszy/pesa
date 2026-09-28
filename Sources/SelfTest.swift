@@ -31,6 +31,7 @@ enum SelfTest {
         checkClawdbotAdapter()
         checkRegistry()
         checkKeychain()
+        checkUsableKey()
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
         checkSettings()
@@ -518,6 +519,16 @@ enum SelfTest {
         // Belt and braces: never leave the test account behind, even on failure.
         do { try Keychain.delete(account: "selftest") }
         catch { check("keychain cleanup failed: \(error)", false) }
+    }
+
+    /// Pins the one "a key exists" rule against literals, offline. Three
+    /// directions, each separately falsifiable: `key != nil` (forgets the
+    /// emptiness guard) flips the empty check alone; `key == nil` flips the nil
+    /// check; `return false` flips the real-key check alone.
+    private static func checkUsableKey() {
+        check("a nil key is not usable", !Keychain.isUsableKey(nil))
+        check("an empty key is not usable", !Keychain.isUsableKey(""))
+        check("a non-empty key is usable", Keychain.isUsableKey("selftest-not-a-real-key"))
     }
 
     /// Pins `HarnessTiles`: a failed harness is excluded, a surviving healthy

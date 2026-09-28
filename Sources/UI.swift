@@ -265,7 +265,7 @@ final class AppState: ObservableObject {
     init(paths: ToolPaths = .real) {
         self.paths = paths
         self.config = AppConfig.load()
-        self.hasKey = Keychain.get(account: Self.keychainAccount) != nil
+        self.hasKey = Keychain.isUsableKey(Keychain.get(account: Self.keychainAccount))
         startRefreshTimer()
         Task { await refreshAuthorizationStatus() }
     }
@@ -310,7 +310,12 @@ final class AppState: ObservableObject {
                 existing: CatalogCache.details, new: catalog.details)
         }
 
-        guard let key = Keychain.get(account: Self.keychainAccount), !key.isEmpty else {
+        // One read serves both the guard and `hasKey`: an external add or
+        // removal is reconciled here, so the popover's key claim and its usage
+        // line cannot disagree.
+        let storedKey = Keychain.get(account: Self.keychainAccount)
+        hasKey = Keychain.isUsableKey(storedKey)
+        guard Keychain.isUsableKey(storedKey), let key = storedKey else {
             errorText = "No OpenRouter API key. Add one in Settings."
             // A key removed outside the app (e.g. `security delete-generic-password`)
             // never passes through `clearKey()`, so without this the popover
@@ -478,7 +483,7 @@ final class AppState: ObservableObject {
     func testKey() async {
         let typed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = typed.isEmpty ? (Keychain.get(account: Self.keychainAccount) ?? "") : typed
-        guard !key.isEmpty else {
+        guard Keychain.isUsableKey(key) else {
             keyStatus = "Enter a key first."
             return
         }
