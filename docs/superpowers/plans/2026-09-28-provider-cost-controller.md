@@ -90,7 +90,7 @@ git commit -m "feat: menu bar app skeleton, build and app-bundle scripts"
 - Modify: `Sources/main.swift` (dispatch `--selftest`)
 
 **Interfaces:**
-- Produces: `SelfTest.run() -> Int32` (0 pass, 1 fail) and `SelfTest.check(_ name: String, _ condition: @autoclosure () -> Bool)`, which prints each check's name and marks it PASS/FAIL.
+- Produces: `SelfTest.run() -> Int32` (0 pass, 1 fail), `SelfTest.check(_ name: String, _ condition: @autoclosure () -> Bool)`, and `SelfTest.countFailures(_ checks: [(name: String, condition: Bool)]) -> Int`.
 - Produces: `struct ToolPaths` with all file locations, plus `static var real: ToolPaths` and `func stagedInTempDir(from fixtures: String) throws -> ToolPaths`. Every later adapter takes a `ToolPaths`.
 
 - [ ] **Step 1: Write the failing test**
@@ -104,7 +104,16 @@ Expected: `FAIL harness detects a false condition`, `exit=1`.
 
 - [ ] **Step 3: Fix the check and add `ToolPaths`**
 
-Change the check to a true condition. Add `ToolPaths` fields: `piSettings`, `piAuth`, `piModels`, `piModelsStore`, `opencodeConfig`, `opencodeAuth`, `hermesConfig`, `hermesEnv`, `clawdbotConfig`, `clawdbotDir`, `clawdbotBin`. `real` resolves the paths from the spec's table.
+Change the deliberately failing canary into a **durable** failure-accounting check. The Global Constraint forbids a check that cannot fail, so `check("…", 1 == 1)` must not ship. Extract the counting into a shared function, have `check` record results and `run()` report and aggregate through it, and assert on it:
+
+```swift
+SelfTest.check("harness counts a failing check",
+    SelfTest.countFailures([("deliberate false", false), ("deliberate true", true)]) == 1)
+```
+
+`check(_:_:)` must stay a static function with that exact signature — every later task calls it. `countFailures` must be the same accounting path `run()` uses, so the canary fails if the accounting ever regresses.
+
+Then add `ToolPaths` fields: `piSettings`, `piAuth`, `piModels`, `piModelsStore`, `opencodeConfig`, `opencodeAuth`, `hermesConfig`, `hermesEnv`, `clawdbotConfig`, `clawdbotDir`, `clawdbotBin`. `real` resolves the paths from the spec's table.
 
 `stagedInTempDir(from:)` copies the fixture directory into a fresh temp directory and returns a `ToolPaths` pointing at the copies, using this fixed fixture-name → field mapping:
 
@@ -126,7 +135,7 @@ A fixture that is absent maps to a path inside the temp directory that does not 
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `./.build/ProviderCostController --selftest; echo "exit=$?"`
-Expected: `PASS harness detects a false condition`, `exit=0`.
+Expected: `PASS harness counts a failing check`, `exit=0`.
 
 - [ ] **Step 5: Commit**
 
