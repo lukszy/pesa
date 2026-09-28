@@ -996,6 +996,8 @@ Expected: every check PASS, `exit=0`, and zero compiler warnings.
 Run: `./scripts/build-app.sh && open ProviderCostController.app`
 Expected: the menu bar shows the real balance (near `$17.10` at time of writing); opening the popover lists pi and opencode as configured, hermes and clawdbot as unset; toggling each menu bar checkbox re-renders the item and clearing both leaves the icon visible; changing a model updates that tool's file and its row. Confirm `~/.pi/agent/settings.json` and `~/.config/opencode/opencode.json` still have their original key order.
 
+**Restore what you changed in the user's live agent configs.** This is the only task whose verification writes to real files outside the repository — `ToolPaths.real` points at the user's actual pi, opencode, hermes, and clawdbot configs, and exercising a model change edits them for real. Before touching any of them, record the current `defaultProvider`/`defaultModel` (pi) and `model` (opencode) values; after verifying, set them back to exactly those values and confirm the files match what you recorded. Report what you changed, what you restored, and any `.bak` files left beside them, which the app creates by design on every write. The user's coding agents must be left configured as they found them — a smoke test that silently leaves the tool on a different model is a side effect they did not ask for.
+
 - [ ] **Step 5: Commit**
 
 ```bash
