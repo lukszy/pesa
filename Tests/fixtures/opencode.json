@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "oMLX",
+      "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "not-a-real-key" },
+      "models": { "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit": { "name": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" } }
+    },
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio",
+      "options": { "baseURL": "http://127.0.0.1:1234/v1" }
+    }
+  },
+  "model": "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
+}
