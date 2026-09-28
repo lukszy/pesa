@@ -766,7 +766,9 @@ git commit -m "feat: keychain storage and one-click import of the existing pi ke
 **Interfaces:**
 - Produces: `struct Credits: Equatable { let totalCredits: Double; let totalUsage: Double; var remaining: Double }`.
 - Produces: `enum OpenRouterError: Error { case badStatus(Int), notJSON, missingField(String) }`.
-- Produces: `enum OpenRouter` with `static func parseCredits(_ data: Data) throws -> Credits`, `static func credits(apiKey: String) async throws -> Credits`, `static func models() async throws -> [(id: String, name: String)]`, `static func parseCatalog(_ data: Data) throws -> [(id: String, name: String)]`, `static func loadCachedCatalog() throws -> [(id: String, name: String)]?`, `static let catalogPath: String`.
+- Produces: `enum OpenRouter` with `static func parseCredits(_ data: Data) throws -> Credits`, `static func credits(apiKey: String) async throws -> Credits`, `static func models() async throws -> [(id: String, name: String)]`, `static func parseCatalog(_ data: Data) throws -> [(id: String, name: String)]`, `static func loadCachedCatalog(from path: String = OpenRouter.catalogPath) throws -> [(id: String, name: String)]?`, `static let catalogPath: String`.
+- `catalogPath` is `~/Library/Application Support/ProviderCostController/models-cache.json`, alongside the settings file from Task 11. It is a real user path, so `loadCachedCatalog` takes a `path` parameter defaulting to it — the same injection pattern as `AppConfig` — because otherwise the 24-hour cache rule would be untestable without reading the user's actual cache.
+- **No check in this task may perform network I/O.** `credits(apiKey:)` and `models()` are network calls; the suite must run offline and must not need a key. Their testable seam is the pure `parseCredits` / `parseCatalog`, and the cache checks below, which use temp files.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -780,11 +782,36 @@ SelfTest.check("a non-JSON catalog is an error, not a crash", (try? OpenRouter.p
 SelfTest.check("a catalog without names is an error", (try? OpenRouter.parseCatalog(Data(#"{"data":[{"id":"x"}]}"#.utf8))) == nil)
 ```
 
+The 24-hour cache rule needs its own checks, because a cache that always returns `nil` or always serves stale data is a silent bug: the app would either refetch on every launch or never notice a price change. Use an injected temp path, and assert the absence of throwing as well as the absence of a value — `(try? …) == nil` alone cannot tell "returned nil" from "threw":
+
+```swift
+let cachePath = (cfg.piSettings as NSString).deletingLastPathComponent + "/models-cache.json"
+var missingThrew = false
+var missingResult: [(id: String, name: String)]? = [(id: "sentinel", name: "sentinel")]
+do { missingResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { missingThrew = true }
+SelfTest.check("a missing catalog cache returns nil rather than throwing",
+    !missingThrew && missingResult == nil)
+
+let stale = "{\"fetchedAt\": \"2001-01-01T00:00:00Z\", \"models\": [{\"id\": \"a/b\", \"name\": \"A\"}]}"
+try stale.write(toFile: cachePath, atomically: true, encoding: .utf8)
+var staleThrew = false
+var staleResult: [(id: String, name: String)]? = nil
+do { staleResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { staleThrew = true }
+SelfTest.check("a catalog older than 24 hours is not served",
+    !staleThrew && staleResult == nil)
+
+let fresh = "{\"fetchedAt\": \"\(ISO8601DateFormatter().string(from: Date()))\", \"models\": [{\"id\": \"a/b\", \"name\": \"A\"}]}"
+try fresh.write(toFile: cachePath, atomically: true, encoding: .utf8)
+var freshResult: [(id: String, name: String)]? = nil
+do { freshResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { freshResult = nil }
+SelfTest.check("a catalog fresher than 24 hours is served", (freshResult?.count ?? 0) == 1)
+```
+
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the client**
 
-`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `parseCatalog` decodes `data[]` entries and throws unless every entry has both `id` and `name`. `models` fetches `https://openrouter.ai/api/v1/models`, writes the parsed entries to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours. `loadCachedCatalog` returns `nil` when the cache file is absent or stale, and a parse failure must surface as a thrown error rather than a silent empty list. Add `Double.rounded(toPlaces:)` as a small helper in this file.
+`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `parseCatalog` decodes `data[]` entries and throws unless every entry has both `id` and `name`. `models` fetches `https://openrouter.ai/api/v1/models`, writes the parsed entries to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours. `loadCachedCatalog(from:)` returns `nil` when the cache file is absent or its `fetchedAt` is more than 24 hours old, and a parse failure must surface as a thrown error rather than a silent empty list — replacing a corrupt cache by refetching is `models`' business, not this function's. Add `Double.rounded(toPlaces:)` as a small helper in this file.
 
 - [ ] **Step 4: Run to verify it passes.**
 
