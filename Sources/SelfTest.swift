@@ -535,11 +535,20 @@ enum SelfTest {
             let parsed = try OpenRouter.parseCredits(Data(
                 #"{"data":{"total_credits":344.11,"total_usage":327.007530314}}"#.utf8))
             check("credits parse", parsed.remaining.rounded(toPlaces: 2) == 17.10)
+            // Pins rounding vs truncation: 17.102… truncates and rounds to the
+            // same 17.10, so the check above cannot fail for this property.
+            check("rounding rounds rather than truncating",
+                  177.567.rounded(toPlaces: 2) == 177.57)
             check("credits parse keeps both fields",
                   parsed.totalCredits == 344.11 && parsed.totalUsage == 327.007530314)
 
             check("missing total_usage is an error, not a zero",
                   (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":1}}"#.utf8))) == nil)
+            // The two absent-field guards are separate lines; covering only one
+            // leaves the other free to regress. `parseCredits` returns a
+            // non-optional, so `try?` yields nil only when it throws.
+            check("a missing total_credits is an error, not a zero",
+                  (try? OpenRouter.parseCredits(Data(#"{"data":{"total_usage":1}}"#.utf8))) == nil)
             check("html error page is an error",
                   (try? OpenRouter.parseCredits(Data("<html>502</html>".utf8))) == nil)
             check("string-typed numbers are an error, not coerced",

@@ -76,7 +76,10 @@ enum OpenRouter {
         let (body, response) = try await URLSession.shared.data(for: request)
         try checkStatus(response)
         let parsed = try parseCatalog(body)
-        try writeCatalog(parsed)
+        // Best-effort: the contract is to return models, caching is opportunistic.
+        // A failed write degrades to refetching next time rather than failing a
+        // caller that already holds a good list.
+        try? writeCatalog(parsed)
         return parsed
     }
 
