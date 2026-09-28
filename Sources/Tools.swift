@@ -52,15 +52,9 @@ enum Tools {
 
 // MARK: - opencode
 
-/// File existence is the primary signal: a Finder-launched app gets a minimal
-/// `PATH`, so an `opencode` binary lookup can miss even when it is installed.
 private func detectOpencode(_ paths: ToolPaths) -> Bool {
-    let fm = FileManager.default
-    if fm.fileExists(atPath: paths.opencodeConfig) { return true }
-    for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
-        if fm.isExecutableFile(atPath: "\(dir)/opencode") { return true }
-    }
-    return false
+    FileManager.default.fileExists(atPath: paths.opencodeConfig)
+        || isExecutableOnPath("opencode")
 }
 
 /// opencode stores a single `provider/model` string. The model id itself keeps
@@ -100,13 +94,19 @@ private func opencodeModels(_ paths: ToolPaths, provider: String) throws -> [(id
 
 // MARK: - pi
 
-/// File existence is the primary signal: a Finder-launched app gets a minimal
-/// `PATH`, so a `pi` binary lookup can miss even when pi is installed.
 private func detectPi(_ paths: ToolPaths) -> Bool {
+    FileManager.default.fileExists(atPath: paths.piSettings)
+        || isExecutableOnPath("pi")
+}
+
+/// Whether `name` resolves to an executable on the current `PATH`. Shared by
+/// every adapter's detection. Callers put file existence first because a
+/// Finder-launched app gets a minimal `PATH`, so this lookup alone can miss an
+/// installed tool whose config exists.
+private func isExecutableOnPath(_ name: String) -> Bool {
     let fm = FileManager.default
-    if fm.fileExists(atPath: paths.piSettings) { return true }
     for dir in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") {
-        if fm.isExecutableFile(atPath: "\(dir)/pi") { return true }
+        if fm.isExecutableFile(atPath: "\(dir)/\(name)") { return true }
     }
     return false
 }
