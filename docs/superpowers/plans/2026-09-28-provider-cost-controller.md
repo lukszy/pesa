@@ -252,6 +252,8 @@ SelfTest.check("the top-level key took the new value", nestedAfter.contains("\"m
 SelfTest.check("the nested model key is untouched", nestedAfter.contains("\"model\": \"nested/two\""))
 ```
 
+Beyond the checks shown above, the suite must also cover: the **absent** top-level JSON key insertion path; a nested key of the same name surviving a write; the **absent YAML key** insertion path (Task 6 depends on this — hermes reports `unset` before the write and configured after it); and the written file **keeping its original POSIX mode**, because a temp-file-and-rename write otherwise resets a `0600` config to the default.
+
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `./.build/ProviderCostController --selftest`
@@ -261,10 +263,10 @@ Expected: FAIL — `ConfigFile` and `ToolModelRef` do not exist, so the build fa
 
 `setJSONString` replaces the value token of the matching **top-level** key and must not reformat, reorder, or lose any other byte. Two rules it must follow, both of which have a check in Step 1:
 
-1. **Match the key only at column 0.** A real config can contain a nested key of the same name (`provider.omlx.model`), and a pattern that matches anywhere in the line would corrupt it. Require the key to start at the beginning of its line with no leading whitespace before the opening quote.
+1. **Match the key at the document's top-level indentation, and never deeper.** A real config contains a nested key of the same name (`provider.omlx.model`), and a pattern that matches anywhere in the line would corrupt it. Note that pretty-printed JSON indents top-level keys too — the binding fixtures in this task use two spaces — so requiring literal column 0 is **wrong**: it misses the real top-level key and inserts a duplicate alongside it. Determine the indentation the document actually uses for its top-level keys and require exactly that, rejecting anything indented deeper. `setYAMLScalar` keeps literal column 0, which *is* correct for YAML. **Known limitation:** minified JSON, which has no indentation to key off, is not supported — it must fail as `ConfigError.malformed` rather than silently matching nothing.
 2. **Insert when the key is absent.** A fresh install may have no top-level `model` key at all; a silent no-op there would report success while changing nothing. Insert a new top-level entry immediately before the document's final closing brace, leaving every existing byte in place.
 
-`setYAMLScalar` replaces a top-level `key: value` line, or appends `key: value` when absent — the same absent-key requirement, which is live for hermes because its fixture deliberately has no `model:` line. Both functions call `backup` then `atomicWrite` (temp file in the same directory, then `rename`), and both return the new contents. `parse` splits on the first `/` and returns `nil` when there is no `/`.
+`setYAMLScalar` replaces a top-level `key: value` line, or appends `key: value` when absent — the same absent-key requirement, which is live for hermes because its fixture deliberately has no `model:` line. Both functions call `backup` then `atomicWrite` (temp file in the same directory, then `rename`), and both return the new contents. `atomicWrite` must **preserve the original file's POSIX permissions**: creating a temp file and renaming it over the original otherwise resets the file to the process default, silently loosening a user's `0600` config. `parse` splits on the first `/` and returns `nil` when there is no `/`.
 
 - [ ] **Step 4: Run to verify it passes**
 
