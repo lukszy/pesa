@@ -232,6 +232,24 @@ let after = try ConfigFile.read(cfg.opencodeConfig)
 SelfTest.check("only the model value changed", after.replacingOccurrences(of: "openrouter/acme/opus-1", with: "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit") == before)
 SelfTest.check("backup holds the pre-write bytes", try ConfigFile.read(cfg.opencodeConfig + ".bak") == before)
 SelfTest.check("missing file is reported, not crashed", (try? ConfigFile.setJSONString("model", to: "x", in: "/nonexistent/y.json")) == nil)
+
+// A fresh install may have no top-level key at all. Writing must insert it, not silently no-op.
+let scratch = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-model-key.json"
+try "{\n  \"theme\": \"dark\"\n}\n".write(toFile: scratch, atomically: true, encoding: .utf8)
+try ConfigFile.setJSONString("model", to: "openrouter/acme/opus-1", in: scratch)
+SelfTest.check("an absent JSON key is inserted, not ignored",
+    (try ConfigFile.read(scratch)).contains("\"model\": \"openrouter/acme/opus-1\""))
+SelfTest.check("inserting the key kept the existing keys",
+    (try ConfigFile.read(scratch)).contains("\"theme\": \"dark\""))
+
+// The key must be matched at column 0 only, so a nested key of the same name survives.
+let nested = (cfg.piSettings as NSString).deletingLastPathComponent + "/nested-model.json"
+try "{\n  \"model\": \"top/one\",\n  \"provider\": {\n    \"omlx\": {\n      \"model\": \"nested/two\"\n    }\n  }\n}\n"
+    .write(toFile: nested, atomically: true, encoding: .utf8)
+try ConfigFile.setJSONString("model", to: "top/three", in: nested)
+let nestedAfter = try ConfigFile.read(nested)
+SelfTest.check("the top-level key took the new value", nestedAfter.contains("\"model\": \"top/three\""))
+SelfTest.check("the nested model key is untouched", nestedAfter.contains("\"model\": \"nested/two\""))
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -241,7 +259,12 @@ Expected: FAIL — `ConfigFile` and `ToolModelRef` do not exist, so the build fa
 
 - [ ] **Step 3: Implement `ConfigFile` and `ToolModelRef`**
 
-`setJSONString` replaces only the value token of the matching top-level key using a regex anchored to line start; it must not reformat or reorder anything else. `setYAMLScalar` replaces a top-level `key: value` line, or appends `key: value` when absent. Both call `backup` then `atomicWrite` (temp file in the same directory, then `rename`). `parse` splits on the first `/` and returns `nil` when there is no `/`.
+`setJSONString` replaces the value token of the matching **top-level** key and must not reformat, reorder, or lose any other byte. Two rules it must follow, both of which have a check in Step 1:
+
+1. **Match the key only at column 0.** A real config can contain a nested key of the same name (`provider.omlx.model`), and a pattern that matches anywhere in the line would corrupt it. Require the key to start at the beginning of its line with no leading whitespace before the opening quote.
+2. **Insert when the key is absent.** A fresh install may have no top-level `model` key at all; a silent no-op there would report success while changing nothing. Insert a new top-level entry immediately before the document's final closing brace, leaving every existing byte in place.
+
+`setYAMLScalar` replaces a top-level `key: value` line, or appends `key: value` when absent — the same absent-key requirement, which is live for hermes because its fixture deliberately has no `model:` line. Both functions call `backup` then `atomicWrite` (temp file in the same directory, then `rename`), and both return the new contents. `parse` splits on the first `/` and returns `nil` when there is no `/`.
 
 - [ ] **Step 4: Run to verify it passes**
 
