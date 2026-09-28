@@ -902,8 +902,6 @@ struct SettingsView: View {
                 alertsSection
                 Divider()
                 launchAtLoginSection
-                Divider()
-                overridesSection
             }
             .padding(20)
         }
@@ -975,31 +973,6 @@ struct SettingsView: View {
                 set: { state.setLaunchAtLogin($0) }))
             if let error = state.launchAtLoginError {
                 Text(error).font(.caption).foregroundStyle(.red)
-            }
-        }
-    }
-
-    /// Only clawdbot runs a binary; the other three adapters read their config
-    /// files directly, so only clawdbot's override is honoured by
-    /// `AppState.effectivePaths`. Rendering a field for the others would accept a
-    /// path and silently ignore it. The field no longer depends on `state.rows`,
-    /// so opening Settings never triggers discovery.
-    private var overridesSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Tool path overrides").font(.headline)
-            Text("Point clawdbot at a non-standard binary location. The other tools read their config files directly, so they have no binary path to override.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Text("clawdbot").frame(width: 70, alignment: .leading)
-                TextField("binary path", text: Binding(
-                    get: { state.config.binaryPathOverrides["clawdbot"] ?? "" },
-                    set: { newValue in
-                        if newValue.isEmpty {
-                            state.config.binaryPathOverrides.removeValue(forKey: "clawdbot")
-                        } else {
-                            state.config.binaryPathOverrides["clawdbot"] = newValue
-                        }
-                    }))
             }
         }
     }

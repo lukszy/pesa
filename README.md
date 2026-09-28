@@ -171,7 +171,8 @@ Settings live in
 - refresh interval in minutes
 - launch at login
 - hidden tools
-- per-tool binary path overrides (only clawdbot runs a binary)
+- the clawdbot binary path, overridden by hand-editing the `binaryPathOverrides` key in `config.json`
+  (there is no Settings control for it; no other tool runs a binary, so none has a path to override)
 - whether the menu bar shows the balance and whether it shows the icon
 - whether the menu bar amount is hidden behind dots until hovered
 - whether the low-balance alert is enabled, and its threshold
