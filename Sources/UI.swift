@@ -180,6 +180,13 @@ final class AppState: ObservableObject {
     /// True while an async discovery pass is in flight, so the popover can show
     /// a subdued placeholder instead of an empty box.
     @Published var isDiscovering = false
+    /// False until the first discovery pass finishes. The popover shows the
+    /// in-flight placeholder when discovery is running **or** has never
+    /// completed, so the very first open (before the pass at main.swift's
+    /// `togglePopover` starts) cannot briefly claim no tools were detected.
+    /// Deliberately not the guard input: `discoverProviders` gates on
+    /// `isDiscovering` alone, so seeding this true cannot wedge discovery.
+    @Published var hasCompletedDiscovery = false
 
     /// Persisted user settings. `didSet` writes them through and re-arms the
     /// refresh timer, so the UI binds directly and every change is saved. Rows
@@ -318,6 +325,7 @@ final class AppState: ObservableObject {
             rowErrors = outcome.errors
             rows = outcome.rows
         } while discoveryPending
+        hasCompletedDiscovery = true
     }
 
     func providers(forAdapterID id: String, current: String?) -> [String] {
@@ -373,6 +381,12 @@ final class AppState: ObservableObject {
     func commitEdit() {
         guard let adapterID = editAdapterID else { return }
         setModel(ToolModelRef(provider: editProvider, model: editModel), for: adapterID)
+        editAdapterID = nil
+    }
+
+    /// Cancel: drop the edit target without writing. Mirrors the old inline
+    /// editor's Cancel, which cleared `editingRowID` and changed nothing.
+    func cancelEdit() {
         editAdapterID = nil
     }
 
@@ -603,9 +617,14 @@ struct PopoverView: View {
         let failed = HarnessTiles.failedCount(rows: state.rows, failed: state.rowErrors)
         return VStack(alignment: .leading, spacing: 8) {
             if state.rows.isEmpty {
-                // Discovery is asynchronous; while it is in flight the popover
-                // is already on screen and this keeps it from looking empty.
-                Text(state.isDiscovering ? "Checking agents…" : "No supported tools detected.")
+                // Discovery is asynchronous; while it is in flight — or before
+                // the first pass has finished — the popover is already on
+                // screen and this keeps it from looking empty. Gating on
+                // `isDiscovering` alone would flash "No supported tools
+                // detected." on the very first open, before main.swift has
+                // started discovery.
+                Text(state.isDiscovering || !state.hasCompletedDiscovery
+                     ? "Checking agents…" : "No supported tools detected.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 LazyVGrid(columns: [
@@ -686,6 +705,10 @@ struct ModelEditorView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
+                Button("Cancel") {
+                    state.cancelEdit()
+                    HarnessWindow.dismiss()
+                }
                 Spacer()
                 Button("Set") { state.commitEdit() }
                     .disabled(!row.writable || state.editProvider.isEmpty || state.editModel.isEmpty)
@@ -731,12 +754,22 @@ enum HarnessWindow {
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false)
         window.isReleasedWhenClosed = false
+        // Resizable so a taller editor is not clipped; the default size is
+        // unchanged and this is the floor.
+        window.contentMinSize = NSSize(width: 420, height: 240)
         window.center()
         return window
+    }
+
+    /// Dismisses the editor without writing. Used by the editor's Cancel; the
+    /// window is kept alive (`isReleasedWhenClosed = false`) and retargeted on
+    /// the next open.
+    static func dismiss() {
+        window?.close()
     }
 }
 

@@ -519,17 +519,31 @@ enum SelfTest {
         catch { check("keychain cleanup failed: \(error)", false) }
     }
 
-    /// Pins `HarnessTiles`: a failed harness is invisible, a healthy one is a
-    /// tile, and the footer count is the number of excluded rows. Each check
-    /// fails if the rule inverts.
+    /// Pins `HarnessTiles`: a failed harness is excluded, a surviving healthy
+    /// harness keeps its own row rather than being replaced by a stub, and the
+    /// footer count is the number of excluded rows. The exclusion check fails if
+    /// the filter inverts; the surviving-row check fails if it filters the right
+    /// ids but rebuilds them from scratch; the count checks pin that only rows
+    /// (not hidden-tool failures) are counted.
     private static func checkHarnessTiles() {
-        let healthy = ToolRow(id: "pi", displayName: "pi", state: .unset, providers: [], writable: true)
+        let healthy = ToolRow(id: "pi", displayName: "pi",
+                              state: .configured(ToolModelRef(provider: "openrouter", model: "a/b")),
+                              providers: ["openrouter"], writable: true)
         let failed = ToolRow(id: "hermes", displayName: "hermes", state: .unset, providers: [], writable: false)
         let errors = ["hermes": "unreadable"]
 
         let visible = HarnessTiles.visible(rows: [healthy, failed], failed: errors)
         check("a failed harness is excluded from the tiles", visible.map(\.id) == ["pi"])
-        check("a healthy harness is kept as a tile", visible.contains { $0.id == "pi" })
+        // Catches a mutation that keeps the right ids but rebuilds the surviving
+        // row as a default stub: `rows.filter { … }.map { ToolRow(id:…, displayName:…,
+        // state: .unset, providers: [], writable: false) }`. The id-only check
+        // above passes for that mutation; this one does not.
+        check("a healthy harness is kept as a tile with its own state",
+              visible.count == 1
+                && visible[0].displayName == "pi"
+                && visible[0].state == .configured(ToolModelRef(provider: "openrouter", model: "a/b"))
+                && visible[0].writable
+                && visible[0].providers == ["openrouter"])
         check("the failed count matches the excluded tiles",
               HarnessTiles.failedCount(rows: [healthy, failed], failed: errors) == 1)
         // A failure with no row (e.g. a hidden tool) must not inflate the footer.

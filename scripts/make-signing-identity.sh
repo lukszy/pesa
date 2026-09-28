@@ -18,7 +18,7 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 # certificate is valid for code signing. It is shown as CSSMERR_TP_NOT_TRUSTED
 # because a self-signed certificate is not in the trust store (by design: trust
 # would need authorisation), and codesign still signs with it locally.
-if security find-identity -p codesigning | grep -qF "$IDENTITY_NAME"; then
+if security find-identity -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
     echo "signing identity already exists: $IDENTITY_NAME (nothing to do)"
     exit 0
 fi
@@ -47,6 +47,19 @@ EOF
     -keyout "$WORK/key.pem" -out "$WORK/cert.pem" \
     -config "$WORK/openssl.cnf" -extensions v3_req >/dev/null 2>&1
 
+# The certificate's SHA-1, as `security find-identity` prints it. Used to
+# remove exactly this identity if the import does not produce a usable one, and
+# to give the user an unambiguous removal command when several certificates share
+# the common name.
+SHA1="$(/usr/bin/openssl x509 -in "$WORK/cert.pem" -noout -fingerprint -sha1 \
+    | sed 's/^.*=//; s/://g')"
+
+# A random passphrase is passed on the command line, so it is briefly visible in
+# `ps`. An empty passphrase is not an option: verified on this machine that
+# `openssl pkcs12 -passout pass:` round-trips an empty passphrase, but
+# `security import -P ""` rejects it with "MAC verification failed during PKCS12
+# import" (and `-nomac` gives "Unknown format in import"). The exposure is
+# short-lived: the p12 lives for milliseconds in a 0700 temp dir.
 P12_PASS="$(/usr/bin/openssl rand -hex 16)"
 /usr/bin/openssl pkcs12 -export \
     -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
@@ -58,10 +71,13 @@ P12_PASS="$(/usr/bin/openssl rand -hex 16)"
 security import "$WORK/identity.p12" \
     -k "$KEYCHAIN" -P "$P12_PASS" -T /usr/bin/codesign >/dev/null
 
-if security find-identity -p codesigning | grep -qF "$IDENTITY_NAME"; then
+if security find-identity -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
     echo "created code-signing identity: $IDENTITY_NAME (login keychain only)"
 else
-    echo "error: identity created but not listed for code signing" >&2
+    # Leave nothing behind: this identity is the one just imported, and the
+    # exact certificate is known by SHA-1, so remove only it.
+    security delete-identity -Z "$SHA1" "$KEYCHAIN" >/dev/null 2>&1 || true
+    echo "error: identity created but not listed for code signing; removed it again" >&2
     exit 1
 fi
 
@@ -69,3 +85,7 @@ echo
 echo "To remove it later: open Keychain Access, delete the \"$IDENTITY_NAME\""
 echo "certificate and its private key, or run:"
 echo "  security delete-identity -c \"$IDENTITY_NAME\""
+echo "If more than one certificate shares that common name, delete by hash"
+echo "instead. Its SHA-1 is the one `security find-identity -p codesigning`"
+echo "prints next to the name:"
+echo "  security delete-identity -Z <SHA-1>"

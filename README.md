@@ -2,7 +2,8 @@
 
 A macOS menu bar app that shows your OpenRouter remaining balance and lets you
 read and change the model configured in the coding agents installed on your
-machine — from one popover.
+machine — clicking a harness's tile in the popover opens that harness's model
+editor in its own window.
 
 The app is a single `LSUIElement` process: no Dock icon, no persistent daemon,
 and no third-party dependencies. (It does spawn the clawdbot CLI on demand, but
@@ -30,8 +31,13 @@ Only tools detected on this machine are listed. A detected tool with no model
 configured shows `unset`. A tool that is not detected is hidden, and a detected
 tool whose config cannot be read is omitted from the tiles — a single subdued
 line below the grid reports how many harnesses could not be read, so the
-failure is not silent. A read-only tool (clawdbot with no resolvable CLI) still
-gets a tile; its editor opens with **Set** disabled.
+failure is not silent. A tool whose config is readable but has no writable path
+— clawdbot with no resolvable CLI and a config the fallback parse can still read
+— keeps its tile, and its editor opens with **Set** disabled. With no resolvable
+CLI the model falls back to a parse of `clawdbot.json`, and that parse throws on
+an absent or comment-laden (JSON5) file, so in the common case that harness is
+dropped from the grid and counted in the footer rather than tiled — the
+hide-on-failure rule, stated below, is deliberate.
 
 | Tool | Detected by | Reads | Writes |
 |---|---|---|---|
@@ -56,10 +62,10 @@ to set one up. The model dropdown always accepts free text.
 
 **clawdbot is written through its own CLI, not by editing the file.** Its
 config (`~/.clawdbot/clawdbot.json`) is JSON5 with comments and trailing commas,
-which a JSON round-trip would destroy. If the CLI cannot be found, its row is
-shown read-only rather than risking a rewrite. The CLI is looked up in standard
-absolute locations before `PATH`, because a Finder-launched app receives a
-minimal `PATH`.
+which a JSON round-trip would destroy. If the CLI cannot be found and its config
+is still parseable, its tile is shown read-only rather than risking a rewrite.
+The CLI is looked up in standard absolute locations before `PATH`, because a
+Finder-launched app receives a minimal `PATH`.
 
 ## Build
 
@@ -157,7 +163,8 @@ credits…** (opens OpenRouter's credits page in the default browser), and
 The per-agent model editor opens in its own AppKit window (one window,
 retargeted to the clicked harness) rather than in a SwiftUI scene, because the
 popover sits outside the SwiftUI scene graph and `openWindow` is unreliable
-there.
+there. The window is resizable and has **Set** and **Cancel**; Cancel (or
+closing the window) dismisses the editor without writing.
 
 ### Launch at login
 
