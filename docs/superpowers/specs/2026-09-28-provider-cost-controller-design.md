@@ -170,8 +170,11 @@ Behaviour:
   clawdbot row would be permanently read-only in the shipped app, which is the
   opposite of the point. This is the one adapter that must *run* a binary rather
   than read a file, so it is the only one where `PATH` matters.
-- Provider dropdowns list only providers the tool actually has configured or
-  authenticated, so a local endpoint such as `omlx` or `ollama` is selectable.
+- Provider dropdowns list the providers a tool has configured or authenticated,
+  so a local endpoint such as `omlx` or `ollama` is selectable. **Hermes is the
+exception:** it also offers a built-in curated list of the providers it supports,
+whether or not they are configured yet, because a hermes user may be about to
+configure one. That list is deliberate and is not a bug to be removed.
 - Model dropdowns are searchable and **always accept free text**, so
   `omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit` and
   `ollama/qwen3.8:latest` work exactly like a catalog entry.
