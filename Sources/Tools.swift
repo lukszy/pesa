@@ -33,6 +33,22 @@ enum Tools {
         )
     }
 
+    static func hermes(_ paths: ToolPaths) -> ToolAdapter {
+        ToolAdapter(
+            id: "hermes",
+            displayName: "hermes",
+            detect: { detectHermes(paths) },
+            currentModel: { try currentHermesModel(paths) },
+            providers: { try hermesProviders(paths) },
+            models: { provider in try hermesModels(paths, provider: provider) },
+            setModel: { ref in
+                // Hermes has no CLI on this machine, so a top-level YAML scalar
+                // edit is the only write path. One line, so no torn write.
+                _ = try ConfigFile.setYAMLScalar("model", to: ref.qualified, in: paths.hermesConfig)
+            }
+        )
+    }
+
     static func opencode(_ paths: ToolPaths) -> ToolAdapter {
         ToolAdapter(
             id: "opencode",
@@ -90,6 +106,90 @@ private func opencodeModels(_ paths: ToolPaths, provider: String) throws -> [(id
         let name = (models[id] as? [String: Any])?["name"] as? String ?? id
         return (id: id, name: name)
     }
+}
+
+// MARK: - hermes
+
+/// File existence only: the design table gives hermes no PATH lookup, because
+/// hermes has no CLI to resolve.
+private func detectHermes(_ paths: ToolPaths) -> Bool {
+    FileManager.default.fileExists(atPath: paths.hermesConfig)
+}
+
+/// Hermes stores its model as one top-level `model: provider/model` scalar,
+/// absent on a fresh install — which is why `setYAMLScalar` must insert it.
+private func currentHermesModel(_ paths: ToolPaths) throws -> ToolModelRef? {
+    guard let raw = try yamlScalar("model", in: paths.hermesConfig) else { return nil }
+    return ToolModelRef.parse(raw)
+}
+
+/// The curated known-provider list, unioned with the top-level `providers:`
+/// keys in the config and the providers implied by `*_API_KEY` names in the
+/// env file.
+private func hermesProviders(_ paths: ToolPaths) throws -> [String] {
+    var names: Set<String> = ["openrouter", "openai", "anthropic", "google", "nous", "zai", "kimi", "deepseek"]
+    names.formUnion(try yamlMappingKeys("providers", in: paths.hermesConfig))
+
+    if FileManager.default.fileExists(atPath: paths.hermesEnv) {
+        for line in try ConfigFile.read(paths.hermesEnv).split(separator: "\n") {
+            let entry = line.trimmingCharacters(in: .whitespaces)
+            guard !entry.hasPrefix("#"), let equals = entry.firstIndex(of: "=") else { continue }
+            let key = String(entry[..<equals])
+            guard key.hasSuffix("_API_KEY") else { continue }
+            names.insert(String(key.dropLast("_API_KEY".count)).lowercased())
+        }
+    }
+    return names.sorted()
+}
+
+/// The model ids already configured for the provider. Hermes keeps no local
+/// model catalog (Task 11 injects the hosted one); the configured `model:`
+/// scalar is the one local entry and belongs only to its own provider.
+private func hermesModels(_ paths: ToolPaths, provider: String) throws -> [(id: String, name: String)] {
+    guard let current = try currentHermesModel(paths), current.provider == provider else { return [] }
+    return [(id: current.model, name: current.model)]
+}
+
+/// The value of a top-level YAML `key: value` scalar, or nil when absent. Only
+/// the one scalar hermes stores a model in is read; nested YAML is never parsed.
+private func yamlScalar(_ key: String, in path: String) throws -> String? {
+    guard FileManager.default.fileExists(atPath: path) else { return nil }
+    let text = try ConfigFile.read(path)
+    let pattern = "(?m)^\(NSRegularExpression.escapedPattern(for: key))[ \\t]*:[ \\t]*(.*)$"
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let valueRange = Range(match.range(at: 1), in: text) else { return nil }
+    let value = text[valueRange].trimmingCharacters(in: .whitespaces)
+    return value.isEmpty ? nil : value
+}
+
+/// Immediate keys of a top-level YAML mapping, such as the provider names under
+/// `providers:`. Only the first indentation level below the section header is
+/// read; a provider's own nested block is never entered.
+private func yamlMappingKeys(_ section: String, in path: String) throws -> Set<String> {
+    guard FileManager.default.fileExists(atPath: path) else { return [] }
+    let text = try ConfigFile.read(path)
+    var keys = Set<String>()
+    var sectionIndent: Int?
+    var childIndent: Int?
+
+    for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        let raw = String(line)
+        let entry = raw.trimmingCharacters(in: .whitespaces)
+        if entry.isEmpty || entry.hasPrefix("#") { continue }
+        let indent = raw.prefix { $0 == " " }.count
+
+        guard let base = sectionIndent else {
+            if entry.hasPrefix("\(section):") { sectionIndent = indent }
+            continue
+        }
+        if indent <= base { break }
+        if childIndent == nil { childIndent = indent }
+        guard indent == childIndent, let colon = entry.firstIndex(of: ":") else { continue }
+        let key = String(entry[..<colon]).trimmingCharacters(in: .whitespaces)
+        if !key.isEmpty { keys.insert(key) }
+    }
+    return keys
 }
 
 // MARK: - pi

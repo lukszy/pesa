@@ -24,6 +24,7 @@ enum SelfTest {
         checkConfigEdits()
         checkPiAdapter()
         checkOpencodeAdapter()
+        checkHermesAdapter()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -210,6 +211,53 @@ enum SelfTest {
                   configAfter.contains("@ai-sdk/openai-compatible"))
         } catch {
             check("opencode adapter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the hermes adapter against a staged temp copy of
+    /// Tests/fixtures. Never touches a real user path. Throwing calls are
+    /// hoisted out of `check`'s non-throwing autoclosure.
+    private static func checkHermesAdapter() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+            let he = Tools.hermes(cfg)
+
+            check("hermes detects from config.yaml", he.detect())
+
+            let unset = try he.currentModel()
+            check("hermes reports no model when unset", unset == nil)
+
+            try he.setModel(ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash"))
+            let written = try he.currentModel()
+            check("hermes wrote a top-level model",
+                  written == ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash"))
+            let configAfter = try ConfigFile.read(cfg.hermesConfig)
+            check("hermes kept the plugins block", configAfter.contains("orca-status"))
+
+            let providers = try he.providers()
+            check("hermes providers include env-configured ones",
+                  Set(providers).isSuperset(of: ["openrouter"]))
+
+            // A top-level providers: mapping contributes provider names. The key
+            // is deliberately outside the curated list, so the check can fail.
+            let unionPath = (cfg.hermesConfig as NSString).deletingLastPathComponent + "/hermes-providers.yaml"
+            try "providers:\n  together:\n    api_key: not-a-real-key\nplugins:\n  enabled:\n    - orca-status\n"
+                .write(toFile: unionPath, atomically: true, encoding: .utf8)
+            var unionCfg = cfg
+            unionCfg.hermesConfig = unionPath
+            let union = try Tools.hermes(unionCfg).providers()
+            check("hermes providers include top-level YAML keys",
+                  Set(union).isSuperset(of: ["together"]))
+
+            // Hermes keeps no local model catalog; the configured model is the
+            // one local entry, and it belongs only to its own provider.
+            let openrouterModels = try he.models("openrouter")
+            check("hermes lists the configured model for its provider",
+                  openrouterModels.contains { $0.id == "deepseek/deepseek-v4.1-flash" })
+            let otherModels = try he.models("openai")
+            check("hermes lists no models for an unconfigured provider", otherModels.isEmpty)
+        } catch {
+            check("hermes adapter checks could not run: \(error)", false)
         }
     }
 
