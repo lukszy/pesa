@@ -787,6 +787,17 @@ The parse function is pure, so it is the testable seam. Cases: valid body; a bod
 
 ```swift
 SelfTest.check("credits parse", try OpenRouter.parseCredits(Data(#"{"data":{"total_credits":344.11,"total_usage":327.007530314}}"#.utf8)).remaining.rounded(toPlaces: 2) == 17.10)
+
+// The assertion above cannot distinguish rounding from truncation: 17.102469686 × 100 is
+// 1710.2469686, whose floor and its nearest integer are both 1710. A truncating
+// `rounded(toPlaces:)` would pass it. A value with a 5-or-more in the third decimal does not.
+SelfTest.check("rounding rounds rather than truncating", 177.567.rounded(toPlaces: 2) == 177.57)
+
+// `try?` on a non-optional-returning throwing function yields nil only when it throws, so
+// these two cannot pass without the guard. Both guards are separate lines of code; covering
+// only one leaves the other free to regress.
+SelfTest.check("a missing total_usage is an error, not a zero", (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":1}}"#.utf8))) == nil)
+SelfTest.check("a missing total_credits is an error, not a zero", (try? OpenRouter.parseCredits(Data(#"{"data":{"total_usage":1}}"#.utf8))) == nil)
 SelfTest.check("missing total_usage is an error, not a zero", (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":1}}"#.utf8))) == nil)
 SelfTest.check("html error page is an error", (try? OpenRouter.parseCredits(Data("<html>502</html>".utf8))) == nil)
 SelfTest.check("a non-JSON catalog is an error, not a crash", (try? OpenRouter.parseCatalog(Data("<html>".utf8))) == nil)
@@ -822,7 +833,9 @@ SelfTest.check("a catalog fresher than 24 hours is served", (freshResult?.count 
 
 - [ ] **Step 3: Implement the client**
 
-`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `parseCatalog` decodes `data[]` entries and throws unless every entry has both `id` and `name`. `models` fetches `https://openrouter.ai/api/v1/models`, writes the parsed entries to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours. `loadCachedCatalog(from:)` returns `nil` when the cache file is absent or its `fetchedAt` is more than 24 hours old, and a parse failure must surface as a thrown error rather than a silent empty list — replacing a corrupt cache by refetching is `models`' business, not this function's. Add `Double.rounded(toPlaces:)` as a small helper in this file.
+`credits` performs `GET https://openrouter.ai/api/v1/credits` with the bearer key, checks the status code, and calls `parseCredits`. `parseCredits` decodes `data.total_credits` and `data.total_usage` as numbers and throws `missingField` if either is absent — a missing field must never be read as zero. `parseCatalog` decodes `data[]` entries and throws unless every entry has both `id` and `name`. `models` fetches `https://openrouter.ai/api/v1/models`, writes the parsed entries to `catalogPath` with a `fetchedAt` timestamp, and returns the cache without a network call when it is younger than 24 hours.
+
+**A cache-write failure must not fail `models`.** Its contract is to return models; caching is opportunistic. A failed write should degrade to refetching next time, not to an empty model picker for a caller that already holds a perfectly good list — the user would see "no models" because an auxiliary step failed. Write best-effort and return the fetched catalog regardless. Note the deliberate asymmetry: a *read* of a corrupt cache throws (so a real parse problem is visible), while a *write* failure is absorbed here, and `models` handles the corrupt-cache throw by refetching. `loadCachedCatalog(from:)` returns `nil` when the cache file is absent or its `fetchedAt` is more than 24 hours old, and a parse failure must surface as a thrown error rather than a silent empty list — replacing a corrupt cache by refetching is `models`' business, not this function's. Add `Double.rounded(toPlaces:)` as a small helper in this file.
 
 - [ ] **Step 4: Run to verify it passes.**
 
