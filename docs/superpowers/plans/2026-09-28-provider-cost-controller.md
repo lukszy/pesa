@@ -472,14 +472,25 @@ SelfTest.check("hermes wrote a top-level model",
 SelfTest.check("hermes kept the plugins block",
     (try ConfigFile.read(cfg.hermesConfig)).contains("orca-status"))
 SelfTest.check("hermes providers include env-configured ones",
-    Set(try he.providers()).isSuperset(of: ["openrouter"]))
+    Set(try he.providers()).isSuperset(of: ["openrouter", "synthetic"]))
+SelfTest.check("a nested providers: section is not read as the top-level one", {
+    let nestedYaml = (cfg.piSettings as NSString).deletingLastPathComponent + "/nested-providers.yaml"
+    try "llm:\n  providers:\n    bogus:\n      model: x\n".write(toFile: nestedYaml, atomically: true, encoding: .utf8)
+    var nestedPaths = cfg
+    nestedPaths.hermesConfig = nestedYaml
+    return !(try Tools.hermes(nestedPaths).providers()).contains("bogus")
+}())
 ```
 
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the hermes adapter**
 
+`Tests/fixtures/hermes.env` must carry two variables: `OPENROUTER_API_KEY=not-a-real-key`, and a second whose provider name is **neither in the curated list nor in the YAML** — use `SYNTHETIC_API_KEY=not-a-real-key`, giving the provider `synthetic`. The second is what makes the env-parsing check able to fail: `openrouter` is already in the curated list, so asserting only on it would pass even with the entire env-parsing block deleted. No real credentials.
+
 `detect` is file-exists on `hermesConfig`. `currentModel` reads a top-level `model:` scalar if present, otherwise `nil`. `providers` is a curated list (`openrouter`, `openai`, `anthropic`, `google`, `nous`, `zai`, `kimi`, `deepseek`) unioned with any `providers:` keys in the YAML and with provider names implied by `*_API_KEY` names in `hermesEnv`. `setModel` calls `ConfigFile.setYAMLScalar("model", ...)`.
+
+**The section-header match must require indent 0.** When locating the top-level `providers:` section, a header matched on the trimmed line is worse than useless: a `providers:` nested under some other top-level key (for example `llm:` → `providers:` → `bogus:`) is then accepted as the top-level section, and its child keys surface as provider names the config does not actually have. Require the header to begin at column 0 and let the existing deeper-indent guard handle everything beneath it. This is the rule the `nested-providers.yaml` check above pins.
 
 - [ ] **Step 4: Run to verify it passes.**
 
