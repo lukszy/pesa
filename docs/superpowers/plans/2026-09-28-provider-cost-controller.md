@@ -704,21 +704,38 @@ git commit -m "feat: tool detection registry with explicit unset state"
 - Produces: `enum Keychain` with `static let service`, `static func get(account: String) -> String?`, `static func set(_ value: String, account: String) throws`, `static func delete(account: String)`.
 - Produces: `static func importFromPi(_ paths: ToolPaths) -> String?` returning the OpenRouter credential from `piAuth` when one is present.
 
+**`set` must upsert.** Verified against the real Keychain: `SecItemAdd` on an account that already has an item returns `-25299` (`errSecDuplicateItem`). So a plain `SecItemAdd` implementation fails the second time the user changes the API key — and a single leftover item from an interrupted run would fail this suite from then on. Delete-then-add or `SecItemUpdate`; either is fine, a failing re-set is not.
+
+`Security` is already linked by `scripts/build.sh` (line 10), so this task needs **no build change**. Do not touch `scripts/build.sh`.
+
 - [ ] **Step 1: Write the failing tests**
 
-Use a test-only account so the real key is never touched. `Tests/fixtures/pi-auth.json` must contain the literal placeholder `"access": "sk-or-v1-selftest-fixture-not-a-real-key"` so the import assertion has a real expected value.
+Use a test-only account so the real key is never touched. `Tests/fixtures/pi-auth.json` holds the literal placeholder `"access": "sk-or-v1-selftest-fixture-not-a-real-key"`, so the import assertion has a real expected value.
+
+The Keychain is the one dependency here that is not a file, so the "never touch a real user path" rule reads as: **use only the `selftest` account, never the `openrouter` account the app itself writes**, and delete it when done. Verified by probe that a terminal-run binary can add, read, and delete a generic-password item with no prompt and no hang, so these checks are safe to run unattended.
 
 ```swift
-SelfTest.check("keychain round-trips", {
-    try? Keychain.set("test-value-not-a-real-key", account: "selftest")
-    return Keychain.get(account: "selftest") == "test-value-not-a-real-key"
-}())
+var setFailed = false
+do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
+SelfTest.check("keychain set succeeds", !setFailed)
+SelfTest.check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
+
+// Setting twice must overwrite, not fail: SecItemAdd on an existing item returns
+// errSecDuplicateItem, and a leftover item from an interrupted run must not wedge the suite.
+var reSetFailed = false
+do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
+SelfTest.check("keychain set overwrites an existing value",
+    !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
+
 Keychain.delete(account: "selftest")
 SelfTest.check("keychain delete works", Keychain.get(account: "selftest") == nil)
 SelfTest.check("import finds the pi openrouter credential",
     Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
+
+var noAuth = cfg
+noAuth.piAuth = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-such-auth.json"
 SelfTest.check("import returns nil when the file is absent",
-    Keychain.importFromPi(headlessPaths) == nil)
+    Keychain.importFromPi(noAuth) == nil)
 ```
 
 This check must compare against an expected value. A check written as `<condition> || true` can never fail and is a defect, not a test. The fixture holds a placeholder, never a real key.
