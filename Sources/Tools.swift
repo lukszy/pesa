@@ -38,10 +38,10 @@ enum Tools {
         [pi(paths), opencode(paths), hermes(paths), clawdbot(paths)]
     }
 
-    /// The registry's filter, split out from `all` so it is testable with
-    /// synthetic adapters: every real adapter's `detect()` falls back to `PATH`,
-    /// so a check relying on a staged tool being absent cannot fail on a machine
-    /// where that tool is installed.
+    /// The registry's filter, split out from `all` so it is testable. pi,
+    /// opencode and clawdbot each fall back to `PATH`, so for those a check
+    /// relying on a staged tool being absent cannot fail on a machine where the
+    /// tool is installed; hermes has no such fallback and is the absence case.
     static func detected(_ adapters: [ToolAdapter]) -> [ToolAdapter] {
         adapters.filter { $0.detect() }
     }

@@ -413,22 +413,33 @@ enum SelfTest {
     }
 
     /// Exercises the tool registry and the `missing`/`unset`/`configured`
-    /// mapping. The filter is tested with synthetic adapters, not staged paths:
-    /// every real adapter falls back to `PATH`, so a staged-absence check cannot
-    /// fail on a machine where that tool is installed. Never touches a real user
-    /// path — throwing calls are hoisted out of `check`'s non-throwing
-    /// autoclosure.
+    /// mapping. pi, opencode and clawdbot each fall back to `PATH` and are
+    /// installed on the reference machine, so for those a staged-absence check
+    /// cannot fail; hermes's `detect()` is file-existence only, which makes its
+    /// absent-config case machine-independent. The pure filter is tested with
+    /// synthetic adapters so it does not depend on what is installed. Never
+    /// touches a real user path — throwing calls are hoisted out of `check`'s
+    /// non-throwing autoclosure.
     private static func checkRegistry() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
 
-            // Detection falls back to PATH for every adapter, and on the
-            // reference machine pi, opencode and clawdbot are all installed. A
-            // staged-absence check therefore cannot fail here: "not detected" is
-            // unachievable when the real binary is on PATH or in a standard
-            // location. Test the filter with synthetic adapters instead, so the
-            // check is machine-independent and cannot silently pass on a
-            // developer's machine only.
+            // The production overload, which Tasks 11 and 12 call. Hermes is the
+            // one adapter with no `PATH` fallback, so pointing its config at a
+            // missing file genuinely undetects it on any machine. Without these
+            // two checks a wrong delegation here (`detected([])`, unfiltered, or
+            // bound to another `paths`) would ship unnoticed.
+            var headless = cfg
+            headless.hermesConfig = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-such-hermes.yaml"
+            check("the production registry excludes a tool whose config is absent",
+                  !Tools.detected(headless).contains { $0.id == "hermes" })
+            check("the production registry still includes a tool whose config is present",
+                  Tools.detected(cfg).contains { $0.id == "hermes" })
+
+            // For pi, opencode and clawdbot a staged-absence check cannot work:
+            // each falls back to `PATH` and is installed here. Hermes is covered
+            // above. Test the pure filter with synthetic adapters so the
+            // assertion is machine-independent.
             let yes = ToolAdapter(id: "yes", displayName: "yes", detect: { true }, currentModel: { nil },
                                   providers: { [] }, models: { _ in [] }, setModel: { _ in })
             let no = ToolAdapter(id: "no", displayName: "no", detect: { false }, currentModel: { nil },
