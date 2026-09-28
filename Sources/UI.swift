@@ -4,6 +4,13 @@ import ServiceManagement
 import SwiftUI
 import UserNotifications
 
+/// The one place a remaining balance becomes display text. Four surfaces render
+/// it — the menu bar, the popover header, the key-test status line, and the
+/// low-balance notification — and a second formatter is how they drift apart.
+func formatBalance(_ value: Double) -> String {
+    String(format: "$%.2f", value)
+}
+
 /// What the menu bar status item renders. Pure, so the behaviour a user would
 /// otherwise have to observe by eye is testable. `StatusItemController` renders
 /// the result.
@@ -16,7 +23,7 @@ enum MenuBarPresentation {
         } else if error {
             text = "—"
         } else if let balance {
-            text = String(format: "$%.2f", balance)
+            text = formatBalance(balance)
         } else {
             // Never fetched: render nothing rather than a $0.00 lie.
             text = nil
@@ -396,7 +403,7 @@ final class AppState: ObservableObject {
         }
         do {
             let credits = try await OpenRouter.credits(apiKey: key)
-            keyStatus = String(format: "Key works. Remaining $%.2f.", credits.remaining)
+            keyStatus = "Key works. Remaining \(formatBalance(credits.remaining))."
         } catch {
             keyStatus = "Key test failed: \(describe(error))"
         }
@@ -454,7 +461,7 @@ final class AppState: ObservableObject {
         guard notificationsAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = "OpenRouter balance is low"
-        content.body = String(format: "Remaining $%.2f, below your $%.2f threshold.", balance, threshold)
+        content.body = "Remaining \(formatBalance(balance)), below your \(formatBalance(threshold)) threshold."
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: UUID().uuidString, content: content, trigger: nil)
@@ -553,35 +560,40 @@ struct PopoverView: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                // The popover always shows the balance, even when the menu bar
-                // hides it. The status item's text comes from
-                // MenuBarPresentation, not from this view.
-                Text(balanceText).font(.title2).bold()
-                if let updated = state.lastUpdated {
-                    Text("Updated \(updated, style: .relative)")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Refresh") { Task { await state.refresh() } }
-                Button {
-                    SettingsWindow.open()
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.borderless)
-                .help("Settings")
+        // The balance is the centrepiece. A never-fetched balance shows the em
+        // dash in the same large style rather than a $0.00 lie; a failed fetch
+        // keeps the last known balance large with the error beneath it. The
+        // refresh control lives in an overlay pinned to the top-trailing
+        // corner, so an HStack button can never push the number off-centre.
+        VStack(spacing: 4) {
+            // The popover always shows the balance, even when the menu bar
+            // hides it. The status item's text comes from MenuBarPresentation,
+            // not from this view.
+            Text(balanceText)
+                .font(.system(size: 34, weight: .semibold, design: .rounded))
+            if let updated = state.lastUpdated {
+                Text("Updated \(updated, style: .relative)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if let error = state.errorText {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         }
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                Task { await state.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Refresh")
+        }
     }
 
     private var balanceText: String {
         guard let remaining = state.remaining else { return "—" }
-        return String(format: "$%.2f", remaining)
+        return formatBalance(remaining)
     }
 
     // MARK: Tools
@@ -729,8 +741,9 @@ enum HarnessWindow {
 }
 
 /// The settings content, shown in the SwiftUI `Settings` scene opened by the
-/// popover's gear button and the app menu's Settings… item. Quit intentionally
-/// lives on the status item's right-click menu now, not here.
+/// status item's right-click `Settings…` item and the app menu's Settings…
+/// item. Quit intentionally lives on the status item's right-click menu now,
+/// not here.
 struct SettingsView: View {
     @ObservedObject var state: AppState
 
