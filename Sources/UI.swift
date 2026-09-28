@@ -70,6 +70,68 @@ struct ToolRow {
     let writable: Bool
 }
 
+/// The result of one off-main discovery pass: plain values only, so it can
+/// cross from the background task back to the main actor in one hop.
+struct DiscoveryOutcome {
+    var providers: [String: [String]]
+    var rows: [ToolRow]
+    var errors: [String: String]
+}
+
+/// Builds the provider cache and tool rows. Deliberately not actor-isolated:
+/// `detect()`, `state()`, `providers()` and `Tools.canWrite` touch only the
+/// filesystem and the adapters' non-main-actor closures. `CatalogCache` and
+/// `ToolAdapter.models` are `@MainActor` and are never reached from here, so
+/// this can run in a detached task without annotation changes.
+func discoverAdapters(_ adapters: [ToolAdapter], hiddenTools: [String],
+                      paths: ToolPaths) -> DiscoveryOutcome {
+    var providers: [String: [String]] = [:]
+    for adapter in adapters where adapter.detect() {
+        if let list = try? adapter.providers() {
+            providers[adapter.id] = list
+        }
+    }
+
+    var rows: [ToolRow] = []
+    var errors: [String: String] = [:]
+    for adapter in Tools.detected(adapters) where !hiddenTools.contains(adapter.id) {
+        do {
+            let toolState = try adapter.state()
+            rows.append(ToolRow(
+                id: adapter.id,
+                displayName: adapter.displayName,
+                state: toolState,
+                providers: providers[adapter.id] ?? [],
+                writable: Tools.canWrite(adapter, paths: paths)))
+        } catch {
+            // Unreadable config: show the problem and disable the action,
+            // rather than hiding the tool or pretending it is unset.
+            errors[adapter.id] = describeError(error)
+            rows.append(ToolRow(
+                id: adapter.id,
+                displayName: adapter.displayName,
+                state: .unset,
+                providers: [],
+                writable: false))
+        }
+    }
+    return DiscoveryOutcome(providers: providers, rows: rows, errors: errors)
+}
+
+/// Human-readable error text. Never includes key material: no error from the
+/// Keychain or the network carries the credential. Free function so the
+/// off-main discovery path can use the same mapping as `AppState.describe`.
+func describeError(_ error: Error) -> String {
+    if let openRouter = error as? OpenRouterError {
+        switch openRouter {
+        case .badStatus(let status): return "OpenRouter returned HTTP \(status)."
+        case .notJSON: return "OpenRouter sent a response this app could not read."
+        case .missingField(let field): return "OpenRouter's response was missing \(field)."
+        }
+    }
+    return String(describing: error)
+}
+
 /// The app's observable state. `@MainActor` because its `@Published` properties
 /// are mutated from a timer callback and from `URLSession` continuations,
 /// neither of which runs on the main thread; SwiftUI updates off-main are
@@ -79,10 +141,20 @@ struct ToolRow {
 final class AppState: ObservableObject {
     static let keychainAccount = "openrouter"
 
+    /// The one instance the app runs on. `AppDelegate` and the `Settings` scene
+    /// must observe the same state; the delegate's property is not reliably
+    /// ready when the scene body is first evaluated, so the instance is made
+    /// explicit here. `init(paths:)` stays available for `SelfTest` and other
+    /// harnesses that inject paths.
+    @MainActor static let shared = AppState()
+
     @Published var remaining: Double?
     @Published var lastUpdated: Date?
     @Published var errorText: String?
     @Published var rows: [ToolRow] = []
+    /// True while an async discovery pass is in flight, so the popover can show
+    /// a subdued placeholder instead of an empty box.
+    @Published var isDiscovering = false
 
     /// Persisted user settings. `didSet` writes them through and re-arms the
     /// refresh timer, so the UI binds directly and every change is saved. Rows
@@ -98,7 +170,7 @@ final class AppState: ObservableObject {
             }
             startRefreshTimer()
             if ConfigChange.affectsRows(from: oldValue, to: config) {
-                rebuildRows()
+                Task { await discoverProviders() }
             }
         }
     }
@@ -117,6 +189,9 @@ final class AppState: ObservableObject {
     private var previousBalance: Double?
     private var refreshTimer: Timer?
     private var isRefreshing = false
+    /// Set when a discovery request lands mid-pass, so the newer settings are
+    /// picked up instead of being dropped as stale.
+    private var discoveryPending = false
 
     init(paths: ToolPaths = .real) {
         self.paths = paths
@@ -190,45 +265,34 @@ final class AppState: ObservableObject {
 
     // MARK: - Rows
 
-    /// Loads each detected tool's provider list, then rebuilds the rows. Only
-    /// called while the popover is open: clawdbot's provider list needs a CLI
-    /// launch, which the refresh timer must never do.
-    func loadProviders() {
-        for adapter in orderedAdapters where adapter.detect() {
-            if let providers = try? adapter.providers() {
-                providerCache[adapter.id] = providers
-            }
+    /// Discovers each detected tool's provider list and row state. The
+    /// filesystem work and clawdbot's CLI launches run in a detached task; only
+    /// the finished values are merged here on the main actor. Called while the
+    /// popover is open and whenever a row-affecting setting changes, never by
+    /// the refresh timer. A request arriving mid-pass is coalesced into a
+    /// re-run, so a fast typist's last keystroke is what the rows reflect. The
+    /// guard never leaves the pass permanently wedged: the early return only
+    /// sets a flag, and the running pass drains it.
+    func discoverProviders() async {
+        guard !isDiscovering else {
+            discoveryPending = true
+            return
         }
-        rebuildRows()
-    }
+        isDiscovering = true
+        defer { isDiscovering = false }
+        repeat {
+            discoveryPending = false
+            let adapters = orderedAdapters
+            let hiddenTools = config.hiddenTools
+            let paths = effectivePaths
+            let outcome = await Task.detached(priority: .userInitiated) {
+                discoverAdapters(adapters, hiddenTools: hiddenTools, paths: paths)
+            }.value
 
-    private func rebuildRows() {
-        var newRows: [ToolRow] = []
-        var errors: [String: String] = [:]
-        for adapter in Tools.detected(orderedAdapters)
-        where !config.hiddenTools.contains(adapter.id) {
-            do {
-                let state = try adapter.state()
-                newRows.append(ToolRow(
-                    id: adapter.id,
-                    displayName: adapter.displayName,
-                    state: state,
-                    providers: providerCache[adapter.id] ?? [],
-                    writable: Tools.canWrite(adapter, paths: effectivePaths)))
-            } catch {
-                // Unreadable config: show the problem and disable the action,
-                // rather than hiding the tool or pretending it is unset.
-                errors[adapter.id] = describe(error)
-                newRows.append(ToolRow(
-                    id: adapter.id,
-                    displayName: adapter.displayName,
-                    state: .unset,
-                    providers: [],
-                    writable: false))
-            }
-        }
-        rowErrors = errors
-        rows = newRows
+            providerCache = outcome.providers
+            rowErrors = outcome.errors
+            rows = outcome.rows
+        } while discoveryPending
     }
 
     func providers(forAdapterID id: String, current: String?) -> [String] {
@@ -247,7 +311,7 @@ final class AppState: ObservableObject {
         do {
             try adapter.setModel(ref)
             toolErrorText = nil
-            rebuildRows()
+            Task { await discoverProviders() }
         } catch {
             toolErrorText = "Could not update \(adapter.displayName): \(describe(error))"
         }
@@ -423,14 +487,7 @@ final class AppState: ObservableObject {
     /// Human-readable error text. Never includes key material: no error from
     /// the Keychain or the network carries the credential.
     private func describe(_ error: Error) -> String {
-        if let openRouter = error as? OpenRouterError {
-            switch openRouter {
-            case .badStatus(let status): return "OpenRouter returned HTTP \(status)."
-            case .notJSON: return "OpenRouter sent a response this app could not read."
-            case .missingField(let field): return "OpenRouter's response was missing \(field)."
-            }
-        }
-        return String(describing: error)
+        describeError(error)
     }
 }
 
@@ -439,7 +496,6 @@ final class AppState: ObservableObject {
 struct PopoverView: View {
     @ObservedObject var state: AppState
 
-    @State private var settingsExpanded = false
     @State private var editingRowID: String?
     @State private var editProvider = ""
     @State private var editModel = ""
@@ -454,10 +510,6 @@ struct PopoverView: View {
                 toolList
                 if let error = state.toolErrorText {
                     Text(error).font(.caption).foregroundStyle(.red)
-                }
-                Divider()
-                DisclosureGroup("Settings", isExpanded: $settingsExpanded) {
-                    settings
                 }
             }
             .padding(12)
@@ -481,6 +533,13 @@ struct PopoverView: View {
                 }
                 Spacer()
                 Button("Refresh") { Task { await state.refresh() } }
+                Button {
+                    SettingsWindow.open()
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.borderless)
+                .help("Settings")
             }
             if let error = state.errorText {
                 Text(error).font(.caption).foregroundStyle(.red)
@@ -498,7 +557,9 @@ struct PopoverView: View {
     private var toolList: some View {
         VStack(alignment: .leading, spacing: 8) {
             if state.rows.isEmpty {
-                Text("No supported tools detected.")
+                // Discovery is asynchronous; while it is in flight the popover
+                // is already on screen and this keeps it from looking empty.
+                Text(state.isDiscovering ? "Checking agents…" : "No supported tools detected.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(state.rows, id: \.id) { row in
@@ -596,25 +657,38 @@ struct PopoverView: View {
         editingRowID = nil
     }
 
-    // MARK: Settings
+}
 
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            apiKeySection
-            Divider()
-            refreshSection
-            Divider()
-            menuBarSection
-            Divider()
-            alertsSection
-            Divider()
-            launchAtLoginSection
-            Divider()
-            overridesSection
-            Divider()
-            Button("Quit") { NSApp.terminate(nil) }
+/// The settings content, shown in the SwiftUI `Settings` scene opened by the
+/// popover's gear button and the app menu's Settings… item. Quit intentionally
+/// lives on the status item's right-click menu now, not here.
+struct SettingsView: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                apiKeySection
+                Divider()
+                refreshSection
+                Divider()
+                menuBarSection
+                Divider()
+                alertsSection
+                Divider()
+                launchAtLoginSection
+                Divider()
+                overridesSection
+            }
+            .padding(20)
         }
-        .padding(.top, 6)
+        .frame(width: 420)
+        .frame(maxHeight: 560)
+        // The clawdbot override field renders from the detected rows, so make
+        // sure they are populated even when Settings is opened from ⌘, before
+        // the popover has ever triggered discovery. Async and coalesced, so a
+        // popover that already discovered is not blocked.
+        .task { await state.discoverProviders() }
     }
 
     private var apiKeySection: some View {

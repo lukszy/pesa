@@ -16,6 +16,9 @@ only while the popover is open and only to read or write clawdbot's config.)
 - **Models** — each detected tool's current `provider/model` is displayed, and
   the built-in picker (or free text) writes a new one back to that tool's own
   config.
+- **Agents load asynchronously** — the popover appears immediately and shows
+  **Checking agents…** while detection runs, instead of waiting on clawdbot's
+  CLI, which can take seconds.
 
 ## Supported tools
 
@@ -111,6 +114,12 @@ Settings live in
 - whether the low-balance alert is enabled, and its threshold
 
 The file is plain JSON and contains no secrets.
+
+The settings UI is a standard macOS **Settings** window, opened from the gear
+button in the popover header or **Settings…** in the app menu (⌘,). The popover
+itself holds only the balance header and the detected-agent rows.
+Right-clicking the menu bar icon opens a small menu with **Settings…** and
+**Quit**; left-clicking still toggles the popover.
 
 ### Launch at login
 

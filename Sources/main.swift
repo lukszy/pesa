@@ -43,7 +43,7 @@ final class StatusItemController {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = target
         item.button?.action = action
-        item.button?.sendAction(on: [.leftMouseUp])
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         state.$remaining
             .combineLatest(state.$errorText, state.$config)
@@ -76,7 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     nonisolated override init() { super.init() }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let state = AppState()
+        // Keep the raw `.build/` binary out of the Dock; the bundled app is
+        // already LSUIElement.
+        NSApp.setActivationPolicy(.accessory)
+        // The same instance the `Settings` scene observes; see `AppState.shared`.
+        let state = AppState.shared
         self.state = state
 
         let popover = NSPopover()
@@ -94,16 +98,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePopover() {
+        // A right-click shows the context menu; only a left-click toggles.
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showContextMenu()
+            return
+        }
         guard let state, let button = statusItem?.button, let popover else { return }
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            // Provider lists (clawdbot's needs a CLI launch) load only while the
-            // popover is open.
-            state.loadProviders()
+            // Show first: discovery (clawdbot's CLI launches) runs off the main
+            // actor afterwards, so it cannot delay the popover appearing.
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            Task { await state.discoverProviders() }
         }
+    }
+
+    @objc private func openSettings() { SettingsWindow.open() }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+
+    /// Pops an `NSMenu` from the status item. `statusItem.menu` is assigned only
+    /// for the duration of the click and then cleared, so left-click keeps
+    /// toggling the popover via the button action.
+    private func showContextMenu() {
+        guard let button = statusItem?.button else { return }
+        statusItem?.menu = makeContextMenu()
+        button.performClick(nil)
+        statusItem?.menu = nil
+    }
+
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let settingsItem = NSMenuItem(
+            title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        return menu
     }
 }
 
@@ -117,8 +153,7 @@ if CommandLine.arguments.contains("--probe") {
     exit(runProbe())
 }
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// The SwiftUI `App` owns the lifecycle from here: its `Settings` scene gives
+// us the app menu's Settings… item (and ⌘, for free), while `AppDelegate`
+// keeps the status item and popover.
+AppMain.main()
