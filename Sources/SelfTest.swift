@@ -28,6 +28,7 @@ enum SelfTest {
         checkClawdbotAdapter()
         checkRegistry()
         checkKeychain()
+        checkOpenRouter()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -520,6 +521,68 @@ enum SelfTest {
         // Belt and braces: never leave the test account behind, even on failure.
         do { try Keychain.delete(account: "selftest") }
         catch { check("keychain cleanup failed: \(error)", false) }
+    }
+
+    /// Exercises the pure OpenRouter parsers and the 24-hour catalog cache
+    /// against a temp file. No network I/O and no API key: the parsers are the
+    /// testable seam and the cache path is injected. Never touches a real user
+    /// path. Throwing calls are hoisted out of `check`'s non-throwing
+    /// autoclosure, exactly as the other checks do.
+    private static func checkOpenRouter() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+
+            let parsed = try OpenRouter.parseCredits(Data(
+                #"{"data":{"total_credits":344.11,"total_usage":327.007530314}}"#.utf8))
+            check("credits parse", parsed.remaining.rounded(toPlaces: 2) == 17.10)
+            check("credits parse keeps both fields",
+                  parsed.totalCredits == 344.11 && parsed.totalUsage == 327.007530314)
+
+            check("missing total_usage is an error, not a zero",
+                  (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":1}}"#.utf8))) == nil)
+            check("html error page is an error",
+                  (try? OpenRouter.parseCredits(Data("<html>502</html>".utf8))) == nil)
+            check("string-typed numbers are an error, not coerced",
+                  (try? OpenRouter.parseCredits(Data(#"{"data":{"total_credits":"1","total_usage":"2"}}"#.utf8))) == nil)
+            check("a non-JSON catalog is an error, not a crash",
+                  (try? OpenRouter.parseCatalog(Data("<html>".utf8))) == nil)
+            check("a catalog without names is an error",
+                  (try? OpenRouter.parseCatalog(Data(#"{"data":[{"id":"x"}]}"#.utf8))) == nil)
+            let catalog = try OpenRouter.parseCatalog(Data(
+                #"{"data":[{"id":"a/b","name":"A"},{"id":"c/d","name":"C"}]}"#.utf8))
+            check("a valid catalog parses both entries",
+                  catalog.count == 2 && catalog[0].id == "a/b" && catalog[1].name == "C")
+
+            let cachePath = (cfg.piSettings as NSString).deletingLastPathComponent + "/models-cache.json"
+
+            var missingThrew = false
+            var missingResult: [(id: String, name: String)]? = [(id: "sentinel", name: "sentinel")]
+            do { missingResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { missingThrew = true }
+            check("a missing catalog cache returns nil rather than throwing",
+                  !missingThrew && missingResult == nil)
+
+            let stale = "{\"fetchedAt\": \"2001-01-01T00:00:00Z\", \"models\": [{\"id\": \"a/b\", \"name\": \"A\"}]}"
+            try stale.write(toFile: cachePath, atomically: true, encoding: .utf8)
+            var staleThrew = false
+            var staleResult: [(id: String, name: String)]? = nil
+            do { staleResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { staleThrew = true }
+            check("a catalog older than 24 hours is not served",
+                  !staleThrew && staleResult == nil)
+
+            let fresh = "{\"fetchedAt\": \"\(ISO8601DateFormatter().string(from: Date()))\", \"models\": [{\"id\": \"a/b\", \"name\": \"A\"}]}"
+            try fresh.write(toFile: cachePath, atomically: true, encoding: .utf8)
+            var freshResult: [(id: String, name: String)]? = nil
+            do { freshResult = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { freshResult = nil }
+            check("a catalog fresher than 24 hours is served", (freshResult?.count ?? 0) == 1)
+
+            // A corrupt cache must throw, not be reported as absent or empty.
+            try "{ not json".write(toFile: cachePath, atomically: true, encoding: .utf8)
+            var corruptThrew = false
+            do { _ = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { corruptThrew = true }
+            check("a corrupt catalog cache throws rather than reading as empty", corruptThrew)
+        } catch {
+            check("openrouter checks could not run: \(error)", false)
+        }
     }
 
     /// Verifies stagedInTempDir copies within a temp dir, maps fixture names to
