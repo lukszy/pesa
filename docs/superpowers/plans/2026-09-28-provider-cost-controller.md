@@ -627,33 +627,51 @@ git commit -m "feat: clawdbot adapter delegating writes to its JSON5-safe CLI"
 - Modify: `Sources/Tools.swift`, `Sources/SelfTest.swift`
 
 **Interfaces:**
-- Produces: `Tools.all(_ paths: ToolPaths) -> [ToolAdapter]` returning all four, and `Tools.detected(_ paths: ToolPaths) -> [ToolAdapter]` returning only those whose `detect()` is true.
+- Produces: `Tools.all(_ paths: ToolPaths) -> [ToolAdapter]` returning all four.
+- Produces: `Tools.detected(_ adapters: [ToolAdapter]) -> [ToolAdapter]`, the pure filter, plus `Tools.detected(_ paths: ToolPaths) -> [ToolAdapter]` which is `detected(all(paths))`. Splitting the filter out is what makes it testable: the four real adapters all fall back to `PATH`, so a check that relies on a staged tool being absent cannot fail on a machine where that tool is installed, which is the machine this runs on. Calling `Tools.clawdbot(paths)` with its default candidate list is correct here.
 - Produces: `enum ToolState { case missing, unset, configured(ToolModelRef) }` and `ToolAdapter.state() throws -> ToolState`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```swift
-let root = (cfg.piSettings as NSString).deletingLastPathComponent
-var headless = cfg
-headless.clawdbotDir = root + "/no-such-clawdbot"
-headless.clawdbotBin = root + "/no-such-bin"
-SelfTest.check("undetected tools are excluded",
-    !Tools.detected(headless).contains { $0.id == "clawdbot" })
-SelfTest.check("detected tools are included",
-    Tools.detected(cfg).contains { $0.id == "clawdbot" })
+// Detection falls back to PATH for every adapter, and on the reference machine pi,
+// opencode and clawdbot are all installed. A staged-absence check therefore cannot fail
+// here: "not detected" is unachievable when the real binary is on PATH or in a standard
+// location. Test the filter with synthetic adapters instead, so the check is
+// machine-independent and cannot silently pass on a developer's machine only.
+let yes = ToolAdapter(id: "yes", displayName: "yes", detect: { true }, currentModel: { nil },
+                      providers: { [] }, models: { _ in [] }, setModel: { _ in })
+let no = ToolAdapter(id: "no", displayName: "no", detect: { false }, currentModel: { nil },
+                     providers: { [] }, models: { _ in [] }, setModel: { _ in })
+SelfTest.check("the registry filters out undetected adapters",
+    Tools.detected([yes, no]).map(\.id) == ["yes"])
+SelfTest.check("the registry keeps a detected adapter",
+    Tools.detected([no, yes]).map(\.id) == ["yes"])
+SelfTest.check("all four adapters are registered",
+    Tools.all(cfg).map(\.id) == ["pi", "opencode", "hermes", "clawdbot"])
+SelfTest.check("state reports missing for an undetected adapter",
+    try no.state() == .missing)
+SelfTest.check("state reports unset for a detected adapter with no model",
+    try yes.state() == .unset)
 SelfTest.check("a configured tool reports its ref",
     try Tools.pi(cfg).state() == .configured(ToolModelRef(provider: "openrouter", model: "deepseek/deepseek-v4.1-flash")))
 SelfTest.check("hermes reports unset rather than throwing",
     try Tools.hermes(cfg).state() == .unset)
-```
 
-Both registry checks must be real assertions. A check written as `<condition> || <something already true>` can never fail and is a defect, not a test.
+// An unreadable config must surface, not be quietly mapped to `.missing`.
+let broken = ToolAdapter(id: "broken", displayName: "broken", detect: { true },
+                         currentModel: { throw ConfigError.malformed("/nonexistent", "unreadable") },
+                         providers: { [] }, models: { _ in [] }, setModel: { _ in })
+var stateThrew = false
+do { _ = try broken.state() } catch { stateThrew = true }
+SelfTest.check("an unreadable config is reported, not mapped to missing", stateThrew)
+```
 
 - [ ] **Step 2: Run to verify it fails.**
 
 - [ ] **Step 3: Implement the registry and `state()`**
 
-`state()` returns `.missing` when `detect()` is false, `.unset` when `currentModel()` is `nil`, and `.configured` otherwise. Errors from `currentModel()` throw rather than being mapped to `.missing`, so an unreadable config is reported instead of hidden.
+`state()` returns `.missing` when `detect()` is false, `.unset` when `currentModel()` is `nil`, and `.configured` otherwise. Errors from `currentModel()` throw rather than being mapped to `.missing`, so an unreadable config is reported instead of hidden. Add the `state()` method to the existing `ToolAdapter` struct in `Sources/Tools.swift` — an earlier task's doc comment already forward-references it, and this is the task that adds it.
 
 - [ ] **Step 4: Run to verify it passes.**
 
