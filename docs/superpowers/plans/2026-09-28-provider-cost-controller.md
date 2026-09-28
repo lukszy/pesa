@@ -291,6 +291,47 @@ git commit -m "feat: targeted config edit primitives with backup and atomic writ
 - Create: `Sources/Tools.swift` (add the `ToolAdapter` struct and the pi adapter), `Tests/fixtures/pi-auth.json`, `Tests/fixtures/pi-models.json`, `Tests/fixtures/pi-models-store.json`
 - Modify: `Sources/SelfTest.swift`
 
+**Fixture contents — binding.** These filenames are already in `ToolPaths`' staging map, so use them exactly. Tasks 4 and 9 both assert against these values; do not change them to suit your implementation.
+
+`Tests/fixtures/pi-auth.json` — the `access` value is load-bearing: Task 9 asserts that importing the key from pi returns exactly this string, so it must be present verbatim under `openrouter.access`.
+
+```json
+{
+  "openrouter": { "type": "oauth", "access": "sk-or-v1-selftest-fixture-not-a-real-key", "refresh": "" },
+  "openai": { "type": "api_key", "key": "not-a-real-key" },
+  "opencode": { "type": "api_key", "key": "not-a-real-key" }
+}
+```
+
+`Tests/fixtures/pi-models.json` — supplies the custom `ollama` provider and its model:
+
+```json
+{
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434/v1",
+      "api": "openai-completions",
+      "models": [ { "id": "qwen3.8:latest" } ]
+    }
+  }
+}
+```
+
+`Tests/fixtures/pi-models-store.json` — supplies the cached OpenRouter catalog with display names, which is where `models("openrouter")` gets `~anthropic/claude-fable-latest` from:
+
+```json
+{
+  "openrouter": {
+    "models": [
+      { "id": "~anthropic/claude-fable-latest", "name": "Anthropic: Claude Fable Latest", "provider": "openrouter" },
+      { "id": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek: DeepSeek V4.1 Flash", "provider": "openrouter" }
+    ]
+  }
+}
+```
+
+No real credentials in any of these; `not-a-real-key` and the `sk-or-v1-selftest-fixture-not-a-real-key` placeholder are the only key-shaped strings.
+
 **Interfaces:**
 - Consumes: `ConfigFile`, `ToolModelRef`, `ToolPaths` from Task 3.
 - Produces: `struct ToolAdapter` with `id`, `displayName`, `detect() -> Bool`, `currentModel() throws -> ToolModelRef?`, `providers() throws -> [String]`, `models(_ provider: String) throws -> [(id: String, name: String)]`, `setModel(_ ref: ToolModelRef) throws`.
