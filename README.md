@@ -27,11 +27,12 @@ only while the popover is open and only to read or write clawdbot's config.)
   `limit_remaining` null) shows no bar at all, and a failed `/key` call hides
   the whole line rather than failing the refresh or blanking the balance. A
   missing usage field is treated as an error, never as `$0.00`.
-- **Models** — each detected tool is a tile showing its current
-  `provider/model` (or `unset`). Clicking a tile opens that tool's model editor
-  in its own window, where the built-in picker (or free text) writes a new one
-  back to that tool's own config. For a model that is in OpenRouter's public
-  catalog, the editor also shows a line such as
+- **Models** — each detected tool whose config is readable is a tile showing
+  its current `provider/model` (or `unset`); a detected tool whose config cannot
+  be read is hidden and counted in the footer instead. Clicking a tile opens
+  that tool's model editor in its own window, where the built-in picker (or
+  free text) writes a new one back to that tool's own config. For a model that
+  is in OpenRouter's public catalog, the editor also shows a line such as
   `1M context · $3.00/M in · $15.00/M out`. Those prices are the **base** rates
   from `pricing.prompt`/`pricing.completion`; the same response carries tiered
   `overrides` (for example, one model costs double above 200k prompt tokens),

@@ -834,13 +834,14 @@ enum HarnessWindow {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false)
         window.isReleasedWhenClosed = false
-        // Resizable so a taller editor is not clipped; the default size is
-        // unchanged and this is the floor.
+        // Resizable so a taller editor is not clipped. The default is above the
+        // floor so the editor's optional model-detail and read-only lines fit on
+        // first open; this is the minimum the user can resize down to.
         window.contentMinSize = NSSize(width: 420, height: 240)
         window.center()
         return window
