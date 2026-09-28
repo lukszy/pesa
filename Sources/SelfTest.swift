@@ -667,6 +667,7 @@ enum SelfTest {
     /// usage checks exist because a missing field read as zero would show a
     /// plausible, wrong `$0.00`; the limit checks exist because the bar must
     /// not appear without a real cap.
+    @MainActor
     private static func checkKeyUsageAndModelDetails() {
         do {
             let usage = try OpenRouter.parseKeyUsage(Data(
@@ -750,6 +751,29 @@ enum SelfTest {
         } catch {
             check("model detail checks could not run: \(error)", false)
         }
+
+        // The refresh replace rule, pure and offline. A fetch carrying no datum
+        // must not blank prices already shown; one carrying a datum must replace
+        // them. Each is its own check, so a single mutation (unconditional
+        // replace, or unconditional keep) flips exactly one.
+        let known = ["a/b": ModelDetail(
+            promptPricePerToken: 0.000003,
+            completionPricePerToken: nil,
+            contextLength: nil)]
+        check("an empty detail fetch leaves known prices untouched",
+              CatalogCache.mergeDetails(existing: known, new: [:]) == known)
+        // Not merely "non-empty": an all-nil map is the same "nothing" as an
+        // empty one. Replacing on `!new.isEmpty` would wipe the known prices.
+        let noDatum = ["c/d": ModelDetail(
+            promptPricePerToken: nil, completionPricePerToken: nil, contextLength: nil)]
+        check("a detail-less fetch leaves known prices untouched",
+              CatalogCache.mergeDetails(existing: known, new: noDatum) == known)
+        let fresh = ["c/d": ModelDetail(
+            promptPricePerToken: 0.000001,
+            completionPricePerToken: 0.000002,
+            contextLength: 4096)]
+        check("a detail-bearing fetch replaces known prices",
+              CatalogCache.mergeDetails(existing: known, new: fresh) == fresh)
     }
 
     /// Exercises the settings model and the two pure presentation/alert

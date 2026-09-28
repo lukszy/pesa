@@ -43,9 +43,19 @@ enum ToolState: Equatable {
 enum CatalogCache {
     static var entries: [(id: String, name: String)] = []
     /// Base rates and context windows keyed by model id, from the same `/models`
-    /// body as `entries`. In-memory only: never written to the cache file, so
-    /// it is empty until the first successful fetch of each launch.
+    /// body as `entries`. Persisted in the catalog cache alongside the model
+    /// list, so a fresh cache serves them with no fetch; they are refetched
+    /// only when the cache is stale or was written before details existed.
     static var details: [String: ModelDetail] = [:]
+
+    /// The one rule for replacing known prices with a fetch result: only a map
+    /// carrying a real datum may replace them, so a body with no pricing (an
+    /// empty map, or one whose every entry is the all-nil placeholder) cannot
+    /// blank prices already shown. Pure, so the rule is testable offline.
+    static func mergeDetails(existing: [String: ModelDetail],
+                             new: [String: ModelDetail]) -> [String: ModelDetail] {
+        Catalog.hasData(new) ? new : existing
+    }
 
     /// OpenRouter's global catalog applies only to the `openrouter` provider;
     /// every other provider keeps the tool's own configured models. Catalog

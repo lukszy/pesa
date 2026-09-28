@@ -51,13 +51,15 @@ struct Catalog {
     /// the all-nil placeholder adds nothing a fetch would not, so it must not
     /// satisfy the cache short-circuit. This is also the guard that keeps a
     /// detail-less cache from wiping prices already shown (see `refresh`).
-    var hasModelDetails: Bool {
+    static func hasData(_ details: [String: ModelDetail]) -> Bool {
         details.values.contains {
             $0.promptPricePerToken != nil
                 || $0.completionPricePerToken != nil
                 || $0.contextLength != nil
         }
     }
+
+    var hasModelDetails: Bool { Catalog.hasData(details) }
 }
 
 enum OpenRouterError: Error {

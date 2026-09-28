@@ -303,16 +303,19 @@ final class AppState: ObservableObject {
 
         if let catalog = try? await OpenRouter.models() {
             CatalogCache.entries = catalog.models
-            // A failed fetch falls back to an empty details map; assigning it
-            // would wipe prices that were already shown. Only a catalog that
-            // actually carries a datum replaces the known prices.
-            if catalog.hasModelDetails {
-                CatalogCache.details = catalog.details
-            }
+            // A body with no pricing falls back to detail-less entries;
+            // assigning it would wipe prices that were already shown, so the
+            // replace rule lives in the pure `mergeDetails`.
+            CatalogCache.details = CatalogCache.mergeDetails(
+                existing: CatalogCache.details, new: catalog.details)
         }
 
         guard let key = Keychain.get(account: Self.keychainAccount), !key.isEmpty else {
             errorText = "No OpenRouter API key. Add one in Settings."
+            // A key removed outside the app (e.g. `security delete-generic-password`)
+            // never passes through `clearKey()`, so without this the popover
+            // keeps attributing the removed key's usage to the current key.
+            keyUsage = nil
             return
         }
         do {
