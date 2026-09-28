@@ -370,11 +370,14 @@ SelfTest.check("pi preserved the rest of settings.json",
 
 `chmod 444` on the file itself is **not** sufficient: `rename(2)` only needs write permission on the *parent directory*, so the atomic write would still succeed and the test would pass for the wrong reason. Instead stage `pi-settings.json` inside its own subdirectory, `chmod 0555` that subdirectory, and restore `0755` afterwards.
 
+Capture the bytes to compare against **immediately before the failing write**, in this step — not the `piBefore` variable from Step 1. Step 1 writes a new model into this same file, so the file's contents have legitimately changed by now and comparing against Step 1's bytes would assert something that cannot be true:
+
 ```swift
+let readOnlyBefore = try ConfigFile.read(cfg.piSettings)
 SelfTest.check("read-only config reports an error",
     (try? pi.setModel(ToolModelRef(provider: "x", model: "y"))) == nil)
 SelfTest.check("read-only config is left byte-identical",
-    try ConfigFile.read(cfg.piSettings) == piBefore)
+    try ConfigFile.read(cfg.piSettings) == readOnlyBefore)
 ```
 
 - [ ] **Step 6: Commit**
