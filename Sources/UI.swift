@@ -70,6 +70,23 @@ struct ToolRow {
     let writable: Bool
 }
 
+/// Which detected harnesses render as tiles. A harness whose discovery failed
+/// is dropped from the grid entirely rather than shown as a broken row; its
+/// count drives the popover's subdued footer so the failure is not silent.
+/// Pure, so the visibility rule is pinned by checks instead of by eye.
+/// `failed` is `AppState.rowErrors`, keyed by adapter id.
+enum HarnessTiles {
+    static func visible(rows: [ToolRow], failed: [String: String]) -> [ToolRow] {
+        rows.filter { failed[$0.id] == nil }
+    }
+
+    /// Failures that correspond to a row — i.e. the tiles actually excluded.
+    /// Counting `failed.count` would also include failures for hidden tools.
+    static func failedCount(rows: [ToolRow], failed: [String: String]) -> Int {
+        rows.count - visible(rows: rows, failed: failed).count
+    }
+}
+
 /// The result of one off-main discovery pass: plain values only, so it can
 /// cross from the background task back to the main actor in one hop.
 struct DiscoveryOutcome {
@@ -104,8 +121,9 @@ func discoverAdapters(_ adapters: [ToolAdapter], hiddenTools: [String],
                 providers: providers[adapter.id] ?? [],
                 writable: Tools.canWrite(adapter, paths: paths)))
         } catch {
-            // Unreadable config: show the problem and disable the action,
-            // rather than hiding the tool or pretending it is unset.
+            // Unreadable config: keep the row so the failure can be counted,
+            // but `HarnessTiles.visible` excludes it from the grid. The error
+            // text itself is never rendered inline; only the footer count is.
             errors[adapter.id] = describeError(error)
             rows.append(ToolRow(
                 id: adapter.id,
@@ -317,6 +335,40 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Model editor
+
+    /// Editor state for the separate harness window. It lives here rather than
+    /// as `@State` in a view so the window can be retargeted to another harness
+    /// without rebuilding its content view.
+    @Published var editAdapterID: String?
+    @Published var editProvider = ""
+    @Published var editModel = ""
+    @Published var editProviders: [String] = []
+    @Published var editModels: [(id: String, name: String)] = []
+
+    func beginEdit(_ row: ToolRow) {
+        editAdapterID = row.id
+        let current: ToolModelRef?
+        if case .configured(let ref) = row.state { current = ref } else { current = nil }
+        editProviders = providers(forAdapterID: row.id, current: current?.provider)
+        editProvider = current?.provider ?? editProviders.first ?? ""
+        editModels = models(forAdapterID: row.id, provider: editProvider)
+        editModel = current?.model ?? editModels.first?.id ?? ""
+    }
+
+    func loadModels(for adapterID: String, provider: String, reset: Bool) {
+        editModels = models(forAdapterID: adapterID, provider: provider)
+        if reset || !editModels.contains(where: { $0.id == editModel }) {
+            editModel = editModels.first?.id ?? ""
+        }
+    }
+
+    func commitEdit() {
+        guard let adapterID = editAdapterID else { return }
+        setModel(ToolModelRef(provider: editProvider, model: editModel), for: adapterID)
+        editAdapterID = nil
+    }
+
     // MARK: - API key
 
     func saveKey() {
@@ -347,20 +399,6 @@ final class AppState: ObservableObject {
             keyStatus = String(format: "Key works. Remaining $%.2f.", credits.remaining)
         } catch {
             keyStatus = "Key test failed: \(describe(error))"
-        }
-    }
-
-    func importKeyFromPi() {
-        guard let key = Keychain.importFromPi(paths) else {
-            keyStatus = "No OpenRouter key found in pi's auth file."
-            return
-        }
-        do {
-            try Keychain.set(key, account: Self.keychainAccount)
-            hasKey = true
-            keyStatus = "Imported the key from pi."
-        } catch {
-            keyStatus = "Could not import the key: \(describe(error))"
         }
     }
 
@@ -496,12 +534,6 @@ final class AppState: ObservableObject {
 struct PopoverView: View {
     @ObservedObject var state: AppState
 
-    @State private var editingRowID: String?
-    @State private var editProvider = ""
-    @State private var editModel = ""
-    @State private var editProviders: [String] = []
-    @State private var editModels: [(id: String, name: String)] = []
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -555,108 +587,145 @@ struct PopoverView: View {
     // MARK: Tools
 
     private var toolList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let visible = HarnessTiles.visible(rows: state.rows, failed: state.rowErrors)
+        let failed = HarnessTiles.failedCount(rows: state.rows, failed: state.rowErrors)
+        return VStack(alignment: .leading, spacing: 8) {
             if state.rows.isEmpty {
                 // Discovery is asynchronous; while it is in flight the popover
                 // is already on screen and this keeps it from looking empty.
                 Text(state.isDiscovering ? "Checking agents…" : "No supported tools detected.")
                     .font(.caption).foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8),
+                ], spacing: 8) {
+                    ForEach(visible, id: \.id) { row in
+                        tile(row)
+                    }
+                }
             }
-            ForEach(state.rows, id: \.id) { row in
-                toolRow(row)
+            // A harness that failed discovery is not a tile; this keeps the
+            // failure from being silent without contradicting that rule.
+            if failed > 0 {
+                Text(failed == 1 ? "1 harness could not be read" : "\(failed) harnesses could not be read")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
 
-    private func toolRow(_ row: ToolRow) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(row.displayName).bold()
-                Text(modelText(row)).foregroundStyle(.secondary)
-                Spacer()
-                if row.writable {
-                    Button(editingRowID == row.id ? "Close" : "Change…") {
-                        if editingRowID == row.id { editingRowID = nil } else { beginEdit(row) }
-                    }
-                } else {
-                    Text("read-only").font(.caption).foregroundStyle(.secondary)
-                }
+    private func tile(_ row: ToolRow) -> some View {
+        Button {
+            state.beginEdit(row)
+            HarnessWindow.open(for: row, state: state)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(row.displayName).font(.body).bold()
+                Text(modelText(row)).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
             }
-            if let error = state.rowErrors[row.id] {
-                Text(error).font(.caption).foregroundStyle(.red)
-            }
-            if editingRowID == row.id {
-                editor(row)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private func modelText(_ row: ToolRow) -> String {
-        switch row.state {
-        case .missing: return "— missing"
-        case .unset: return "— unset"
-        case .configured(let ref): return "— \(ref.provider)/\(ref.model)"
-        }
+        if case .configured(let ref) = row.state { return "\(ref.provider)/\(ref.model)" }
+        return "unset"
     }
 
-    private func editor(_ row: ToolRow) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Provider", selection: Binding(
-                get: { editProvider },
-                set: { newValue in
-                    editProvider = newValue
-                    loadModels(for: row.id, provider: newValue, reset: true)
-                })) {
-                ForEach(editProviders, id: \.self) { Text($0).tag($0) }
+}
+
+/// The model editor, hosted in `HarnessWindow` rather than in the popover.
+/// Reads and writes `AppState`'s editor fields so the window can be retargeted
+/// to another harness on each open without keeping any state of its own.
+struct ModelEditorView: View {
+    @ObservedObject var state: AppState
+    let row: ToolRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(row.displayName).font(.headline)
+                if !row.writable {
+                    Text("read-only").font(.caption).foregroundStyle(.secondary)
+                }
             }
-            if !editModels.isEmpty {
-                Picker("Model", selection: $editModel) {
+            Picker("Provider", selection: Binding(
+                get: { state.editProvider },
+                set: { newValue in
+                    state.editProvider = newValue
+                    state.loadModels(for: row.id, provider: newValue, reset: true)
+                })) {
+                ForEach(state.editProviders, id: \.self) { Text($0).tag($0) }
+            }
+            if !state.editModels.isEmpty {
+                Picker("Model", selection: $state.editModel) {
                     ForEach(modelOptions, id: \.id) { Text($0.name).tag($0.id) }
                 }
             }
             // The picker is a convenience; free text is always accepted.
-            TextField("or type a model id", text: $editModel)
+            TextField("or type a model id", text: $state.editModel)
+            if !row.writable {
+                Text("No writable CLI was found, so this harness cannot be changed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
-                Button("Set") { commitEdit(row) }
-                    .disabled(editProvider.isEmpty || editModel.isEmpty)
-                Button("Cancel") { editingRowID = nil }
+                Spacer()
+                Button("Set") { state.commitEdit() }
+                    .disabled(!row.writable || state.editProvider.isEmpty || state.editModel.isEmpty)
             }
         }
-        .padding(6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
+        .padding(16)
+        .frame(width: 380)
     }
 
     /// Keeps the current value selectable so the Picker never logs an invalid
     /// selection for a model that is not in the fetched list.
     private var modelOptions: [(id: String, name: String)] {
-        guard !editModel.isEmpty, !editModels.contains(where: { $0.id == editModel }) else {
-            return editModels
+        guard !state.editModel.isEmpty,
+              !state.editModels.contains(where: { $0.id == state.editModel }) else {
+            return state.editModels
         }
-        return [(id: editModel, name: editModel)] + editModels
+        return [(id: state.editModel, name: state.editModel)] + state.editModels
+    }
+}
+
+/// One lazily-created `NSWindow` for the harness editor. The SwiftUI `Settings`
+/// scene cannot be reused here: `openWindow` is unreliable from a view hosted in
+/// an `NSPopover` because the popover sits outside the SwiftUI scene graph. The
+/// window is created once and retargeted on each open, so a second click raises
+/// the existing window instead of opening another.
+@MainActor
+enum HarnessWindow {
+    private static var window: NSWindow?
+
+    static func open(for row: ToolRow, state: AppState) {
+        let window = self.window ?? makeWindow()
+        self.window = window
+        // Fresh root view per open: the editor's bindings read AppState's
+        // editor fields, which `beginEdit` has just retargeted.
+        window.contentView = NSHostingView(rootView: ModelEditorView(state: state, row: row))
+        window.title = "ProviderCostController — \(row.displayName)"
+        // Proven fix: without activate + makeKey the window reports
+        // `isKeyWindow = false` and opens behind everything.
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
-    private func beginEdit(_ row: ToolRow) {
-        editingRowID = row.id
-        let current: ToolModelRef?
-        if case .configured(let ref) = row.state { current = ref } else { current = nil }
-        editProviders = state.providers(forAdapterID: row.id, current: current?.provider)
-        editProvider = current?.provider ?? editProviders.first ?? ""
-        editModels = state.models(forAdapterID: row.id, provider: editProvider)
-        editModel = current?.model ?? editModels.first?.id ?? ""
+    private static func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        window.center()
+        return window
     }
-
-    private func loadModels(for adapterID: String, provider: String, reset: Bool) {
-        editModels = state.models(forAdapterID: adapterID, provider: provider)
-        if reset || !editModels.contains(where: { $0.id == editModel }) {
-            editModel = editModels.first?.id ?? ""
-        }
-    }
-
-    private func commitEdit(_ row: ToolRow) {
-        state.setModel(ToolModelRef(provider: editProvider, model: editModel), for: row.id)
-        editingRowID = nil
-    }
-
 }
 
 /// The settings content, shown in the SwiftUI `Settings` scene opened by the
@@ -684,11 +753,6 @@ struct SettingsView: View {
         }
         .frame(width: 420)
         .frame(maxHeight: 560)
-        // The clawdbot override field renders from the detected rows, so make
-        // sure they are populated even when Settings is opened from ⌘, before
-        // the popover has ever triggered discovery. Async and coalesced, so a
-        // popover that already discovered is not blocked.
-        .task { await state.discoverProviders() }
     }
 
     private var apiKeySection: some View {
@@ -701,7 +765,6 @@ struct SettingsView: View {
             }
             HStack {
                 Button("Test key") { Task { await state.testKey() } }
-                Button("Import from pi") { state.importKeyFromPi() }
                 Button("Clear") { state.clearKey() }
                     .disabled(!state.hasKey)
             }
@@ -762,25 +825,24 @@ struct SettingsView: View {
     /// Only clawdbot runs a binary; the other three adapters read their config
     /// files directly, so only clawdbot's override is honoured by
     /// `AppState.effectivePaths`. Rendering a field for the others would accept a
-    /// path and silently ignore it.
+    /// path and silently ignore it. The field no longer depends on `state.rows`,
+    /// so opening Settings never triggers discovery.
     private var overridesSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Tool path overrides").font(.headline)
             Text("Point clawdbot at a non-standard binary location. The other tools read their config files directly, so they have no binary path to override.")
                 .font(.caption).foregroundStyle(.secondary)
-            if let row = state.rows.first(where: { $0.id == "clawdbot" }) {
-                HStack {
-                    Text(row.displayName).frame(width: 70, alignment: .leading)
-                    TextField("binary path", text: Binding(
-                        get: { state.config.binaryPathOverrides["clawdbot"] ?? "" },
-                        set: { newValue in
-                            if newValue.isEmpty {
-                                state.config.binaryPathOverrides.removeValue(forKey: "clawdbot")
-                            } else {
-                                state.config.binaryPathOverrides["clawdbot"] = newValue
-                            }
-                        }))
-                }
+            HStack {
+                Text("clawdbot").frame(width: 70, alignment: .leading)
+                TextField("binary path", text: Binding(
+                    get: { state.config.binaryPathOverrides["clawdbot"] ?? "" },
+                    set: { newValue in
+                        if newValue.isEmpty {
+                            state.config.binaryPathOverrides.removeValue(forKey: "clawdbot")
+                        } else {
+                            state.config.binaryPathOverrides["clawdbot"] = newValue
+                        }
+                    }))
             }
         }
     }

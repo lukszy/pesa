@@ -3,7 +3,7 @@ import Security
 
 /// Secret storage for the OpenRouter API key. The key lives here and nowhere
 /// else: nothing in this file writes it to a plain file, logs it, or embeds it
-/// in an error. `importFromPi` only reads — importing is the UI's decision.
+/// in an error.
 enum Keychain {
     static let service = "provider-cost-controller"
 
@@ -59,18 +59,5 @@ enum Keychain {
         if status != errSecSuccess && status != errSecItemNotFound {
             throw Failure(status: status)
         }
-    }
-
-    /// Reads the OpenRouter credential already present in pi's auth file.
-    /// Prefers `openrouter.access` (OAuth) and falls back to `openrouter.key`.
-    /// Never touches the Keychain and never prints the value.
-    static func importFromPi(_ paths: ToolPaths) -> String? {
-        guard let data = FileManager.default.contents(atPath: paths.piAuth),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let openrouter = root["openrouter"] as? [String: Any] else { return nil }
-
-        if let access = openrouter["access"] as? String, !access.isEmpty { return access }
-        if let key = openrouter["key"] as? String, !key.isEmpty { return key }
-        return nil
     }
 }
