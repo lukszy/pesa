@@ -901,7 +901,9 @@ Every selftest write must go to the temp directory. The selftest must never writ
 
 - [ ] **Step 3: Implement `AppConfig` in `Sources/AppConfig.swift`**
 
-Load returns defaults for every field when the file is absent or undecodable, and `load` must never throw. Save writes with `JSONSerialization`, pretty-printed. Because `load` is how the two new booleans and the threshold survive a relaunch, a field that is absent from an older settings file must fall back to its default rather than decoding to `false` — decoding failure must not silently disable a feature the user turned on.
+Load returns defaults for every field when the file is absent or undecodable, and `load` must never throw. Save writes pretty-printed JSON.
+
+**Decode field by field — this is the whole forward-compatibility requirement.** `AppConfig` is declared `Codable`, but a *synthesised* `init(from:)` throws when any key is missing. That would mean an older settings file fails to decode as a whole, `load` falls back to defaults, and every setting the file *did* contain is silently reset — the exact failure Review Focus #6 exists to prevent, and one that will really happen because this app owns this file and its schema is growing. So implement `init(from:)` with `decodeIfPresent(…​) ?? default` for **every** field, filling only what is absent. The brief's `an older settings file keeps its values and gains the new defaults` check is what pins this: it writes `{"refreshMinutes": 33}` and requires `refreshMinutes == 33` *and* the new fields at their defaults. Do not satisfy it by catching a decode failure, which loses the values.
 
 - [ ] **Step 4: Implement `MenuBarPresentation` and `BalanceAlert` in `Sources/UI.swift`**
 
