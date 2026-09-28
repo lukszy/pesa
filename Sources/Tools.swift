@@ -42,6 +42,10 @@ enum ToolState: Equatable {
 @MainActor
 enum CatalogCache {
     static var entries: [(id: String, name: String)] = []
+    /// Base rates and context windows keyed by model id, from the same `/models`
+    /// body as `entries`. In-memory only: never written to the cache file, so
+    /// it is empty until the first successful fetch of each launch.
+    static var details: [String: ModelDetail] = [:]
 
     /// OpenRouter's global catalog applies only to the `openrouter` provider;
     /// every other provider keeps the tool's own configured models. Catalog

@@ -11,6 +11,34 @@ func formatBalance(_ value: Double) -> String {
     String(format: "$%.2f", value)
 }
 
+/// Compact per-million-token price. This reuses `formatBalance` rather than
+/// opening a second `$%.2f`: a price and a balance can never format
+/// differently.
+func formatPerMillionTokens(_ pricePerToken: Double) -> String {
+    formatBalance(pricePerToken * 1_000_000)
+}
+
+/// Human token count for the context window: 1_000_000 -> "1M",
+/// 200_000 -> "200k". Anything not a whole thousand is shown raw.
+func formatTokenCount(_ count: Int) -> String {
+    if count >= 1_000_000 && count % 1_000_000 == 0 { return "\(count / 1_000_000)M" }
+    if count >= 1_000 && count % 1_000 == 0 { return "\(count / 1_000)k" }
+    return "\(count)"
+}
+
+/// The harness window's one-line model summary, e.g.
+/// `1M context · $3.00/M in · $15.00/M out`. Each part is omitted when its
+/// datum is missing, and `nil` means there is nothing to show at all. These
+/// are the **base** rates: `/models` also carries tiered `overrides`, so the
+/// line must not be read as the only rate.
+func formatModelDetail(_ detail: ModelDetail) -> String? {
+    var parts: [String] = []
+    if let context = detail.contextLength { parts.append("\(formatTokenCount(context)) context") }
+    if let prompt = detail.promptPricePerToken { parts.append("\(formatPerMillionTokens(prompt))/M in") }
+    if let completion = detail.completionPricePerToken { parts.append("\(formatPerMillionTokens(completion))/M out") }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
 /// What the menu bar status item renders. Pure, so the behaviour a user would
 /// otherwise have to observe by eye is testable. `StatusItemController` renders
 /// the result.
@@ -174,6 +202,10 @@ final class AppState: ObservableObject {
     @MainActor static let shared = AppState()
 
     @Published var remaining: Double?
+    /// Per-key usage from `/api/v1/key`, or nil when it is unavailable. Read
+    /// only by the popover's usage line; a failed `/key` must not fail the
+    /// refresh or blank the account-wide balance above it.
+    @Published var keyUsage: KeyUsage?
     @Published var lastUpdated: Date?
     @Published var errorText: String?
     @Published var rows: [ToolRow] = []
@@ -265,7 +297,8 @@ final class AppState: ObservableObject {
         defer { isRefreshing = false }
 
         if let catalog = try? await OpenRouter.models() {
-            CatalogCache.entries = catalog
+            CatalogCache.entries = catalog.models
+            CatalogCache.details = catalog.details
         }
 
         guard let key = Keychain.get(account: Self.keychainAccount), !key.isEmpty else {
@@ -292,6 +325,15 @@ final class AppState: ObservableObject {
             // known balance with its age; `MenuBarPresentation` turns the error
             // into the em dash on the status item.
             errorText = describe(error)
+        }
+
+        // Per-key usage is supplementary. It is fetched after the balance so a
+        // failure here can never affect it, and a failure hides the line
+        // rather than failing the refresh.
+        do {
+            keyUsage = try await OpenRouter.keyUsage(apiKey: key)
+        } catch {
+            keyUsage = nil
         }
     }
 
@@ -337,6 +379,14 @@ final class AppState: ObservableObject {
     func models(forAdapterID id: String, provider: String) -> [(id: String, name: String)] {
         guard let adapter = adaptersByID[id] else { return [] }
         return (try? adapter.models(provider)) ?? []
+    }
+
+    /// The OpenRouter catalog detail for a model id, or nil when the id is not
+    /// in the fetched catalog — e.g. a locally configured non-OpenRouter
+    /// model. The harness window shows nothing rather than a false figure.
+    func modelDetail(for id: String) -> ModelDetail? {
+        guard !id.isEmpty else { return nil }
+        return CatalogCache.details[id]
     }
 
     func setModel(_ ref: ToolModelRef, for adapterID: String) {
@@ -585,6 +635,21 @@ struct PopoverView: View {
             // not from this view.
             Text(balanceText)
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
+            // The balance above is account-wide; this line is for the one API
+            // key. The help text says so, because with more than one key the
+            // two figures do not reconcile.
+            if let usage = state.keyUsage {
+                Text(usageLine(usage))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Usage for this API key. The balance above is account-wide.")
+                if let progress = usage.limitProgress {
+                    ProgressView(value: progress.remaining, total: progress.total)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: 220)
+                    Text(limitLabel(progress, reset: usage.limitReset))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             if let updated = state.lastUpdated {
                 Text("Updated \(updated, style: .relative)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -608,6 +673,16 @@ struct PopoverView: View {
     private var balanceText: String {
         guard let remaining = state.remaining else { return "—" }
         return formatBalance(remaining)
+    }
+
+    private func usageLine(_ usage: KeyUsage) -> String {
+        "Today \(formatBalance(usage.usageDaily)) · Month \(formatBalance(usage.usageMonthly))"
+    }
+
+    private func limitLabel(_ progress: (remaining: Double, total: Double), reset: String?) -> String {
+        var text = "\(formatBalance(progress.remaining)) of \(formatBalance(progress.total)) remaining"
+        if let reset { text += " · resets \(reset)" }
+        return text
     }
 
     // MARK: Tools
@@ -700,6 +775,12 @@ struct ModelEditorView: View {
             }
             // The picker is a convenience; free text is always accepted.
             TextField("or type a model id", text: $state.editModel)
+            if let detail = state.modelDetail(for: state.editModel),
+               let summary = formatModelDetail(detail) {
+                Text(summary)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Base rates from OpenRouter's public model catalog. Tiered overrides above a prompt-token threshold are not shown.")
+            }
             if !row.writable {
                 Text("No writable CLI was found, so this harness cannot be changed.")
                     .font(.caption).foregroundStyle(.secondary)

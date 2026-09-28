@@ -17,10 +17,29 @@ only while the popover is open and only to read or write clawdbot's config.)
   bar shows `—` and the popover keeps the last known balance with its age; a
   balance that has never been fetched shows `—` in the same large style rather
   than a `$0.00` lie.
+- **Per-key usage** — directly under the balance, a compact line such as
+  `Today $5.45 · Month $92.17`, from OpenRouter's `GET /api/v1/key`. This is
+  **usage for the stored API key**, whereas the balance above it is
+  **account-wide**; with more than one key the two figures do not reconcile, so
+  the line's tooltip says which is which. When the key has a spend cap
+  configured, a thin progress bar shows the remaining share of that cap with
+  its reset period (`limit_reset`). A key with no cap (`limit` and
+  `limit_remaining` null) shows no bar at all, and a failed `/key` call hides
+  the whole line rather than failing the refresh or blanking the balance. A
+  missing usage field is treated as an error, never as `$0.00`.
 - **Models** — each detected tool is a tile showing its current
   `provider/model` (or `unset`). Clicking a tile opens that tool's model editor
   in its own window, where the built-in picker (or free text) writes a new one
-  back to that tool's own config.
+  back to that tool's own config. For a model that is in OpenRouter's public
+  catalog, the editor also shows a line such as
+  `1M context · $3.00/M in · $15.00/M out`. Those prices are the **base** rates
+  from `pricing.prompt`/`pricing.completion`; the same response carries tiered
+  `overrides` (for example, one model costs double above 200k prompt tokens),
+  which this app does not present. A missing or unparseable price is omitted
+  rather than shown as `$0.00`. The details are parsed from the same `/models`
+  response as the model list but kept **in memory only** — they are not written
+  to the 24-hour cache file, so for the few seconds between launch and the
+  first successful fetch the editor shows no price line.
 - **Agents load asynchronously** — the popover appears immediately and shows
   **Checking agents…** while detection runs, instead of waiting on clawdbot's
   CLI, which can take seconds.
@@ -207,6 +226,5 @@ on a state would notify all day.
   example `~/.hermes/.env`). The key is for this app only.
 - **Sandboxing, notarization, and auto-update.**
 
-Also deferred: local agent ledgers (pi/opencode session logs) and the account
-spend figures from `/api/v1/key` (`usage_daily`/`usage_weekly`/`usage_monthly`).
+Also deferred: local agent ledgers (pi/opencode session logs).
 No placeholder code exists for any deferred item.

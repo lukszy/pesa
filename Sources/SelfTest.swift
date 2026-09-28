@@ -32,6 +32,7 @@ enum SelfTest {
         checkRegistry()
         checkKeychain()
         checkOpenRouter()
+        checkKeyUsageAndModelDetails()
         checkSettings()
         checkHarnessTiles()
         let anyFailed = results.contains { !$0.condition }
@@ -619,6 +620,79 @@ enum SelfTest {
             check("a corrupt catalog cache throws rather than reading as empty", corruptThrew)
         } catch {
             check("openrouter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Pins the `/key` usage parser, the limit-bar accessor, and the
+    /// model-detail parser. All are pure and none touches the network. The
+    /// usage checks exist because a missing field read as zero would show a
+    /// plausible, wrong `$0.00`; the limit checks exist because the bar must
+    /// not appear without a real cap.
+    private static func checkKeyUsageAndModelDetails() {
+        do {
+            let usage = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage":118.444891034,"usage_daily":5.449676908,"usage_weekly":5.449676908,"usage_monthly":92.168432904,"limit":null,"limit_remaining":null,"limit_reset":"monthly","is_free_tier":false}}"#.utf8))
+            check("key usage parses the three spend figures",
+                  usage.usageDaily == 5.449676908
+                      && usage.usageWeekly == 5.449676908
+                      && usage.usageMonthly == 92.168432904)
+            // A null cap is "no cap configured", not zero: the reset period is
+            // still readable while the bar stays hidden.
+            check("a null limit hides the bar and leaves the reset period readable",
+                  usage.limit == nil && usage.limitRemaining == nil
+                      && usage.limitReset == "monthly" && usage.limitProgress == nil)
+
+            // Each guard is its own line; replacing one with `?? 0` compiles
+            // and is caught only by its own check.
+            check("a missing daily usage is an error, not a zero",
+                  (try? OpenRouter.parseKeyUsage(Data(#"{"data":{"usage_weekly":1,"usage_monthly":1}}"#.utf8))) == nil)
+            check("a missing weekly usage is an error, not a zero",
+                  (try? OpenRouter.parseKeyUsage(Data(#"{"data":{"usage_daily":1,"usage_monthly":1}}"#.utf8))) == nil)
+            check("a missing monthly usage is an error, not a zero",
+                  (try? OpenRouter.parseKeyUsage(Data(#"{"data":{"usage_daily":1,"usage_weekly":1}}"#.utf8))) == nil)
+            check("a non-JSON key response is an error, not a crash",
+                  (try? OpenRouter.parseKeyUsage(Data("<html>401</html>".utf8))) == nil)
+        } catch {
+            check("key usage checks could not run: \(error)", false)
+        }
+
+        // `limitProgress` is the bar's only visibility rule.
+        let noCap = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1,
+                             limit: nil, limitRemaining: 50, limitReset: nil)
+        check("a null limit hides the bar even with a remaining figure",
+              noCap.limitProgress == nil)
+        let zeroCap = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1,
+                               limit: 0, limitRemaining: 0, limitReset: nil)
+        check("a zero limit hides the bar rather than showing an empty one",
+              zeroCap.limitProgress == nil)
+        let noRemaining = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1,
+                                   limit: 100, limitRemaining: nil, limitReset: nil)
+        check("a limit without a remaining figure hides the bar",
+              noRemaining.limitProgress == nil)
+        let capped = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1,
+                              limit: 100, limitRemaining: 80, limitReset: "monthly")
+        check("a real cap yields its remaining/total pair",
+              capped.limitProgress?.remaining == 80 && capped.limitProgress?.total == 100)
+
+        do {
+            let details = try OpenRouter.parseModelDetails(Data(
+                #"{"data":[{"id":"anthropic/claude-fable","context_length":1000000,"pricing":{"prompt":"0.000003","completion":"0.000015","overrides":[{"min_prompt_tokens":200000,"prompt":"0.000006"}]}},{"id":"free/model","pricing":{}}]}"#.utf8))
+            check("model details parse string prices and the context window",
+                  details["anthropic/claude-fable"]?.promptPricePerToken == 0.000003
+                      && details["anthropic/claude-fable"]?.completionPricePerToken == 0.000015
+                      && details["anthropic/claude-fable"]?.contextLength == 1000000)
+            // The entry must exist, or `?? 0` would still pass a nil-price check.
+            check("a model with no price is nil, not zero",
+                  details["free/model"] != nil
+                      && details["free/model"]?.promptPricePerToken == nil
+                      && details["free/model"]?.completionPricePerToken == nil)
+            check("a model with no context window is nil, not zero",
+                  details["free/model"] != nil
+                      && details["free/model"]?.contextLength == nil)
+            check("a non-JSON models response is an error, not a crash",
+                  (try? OpenRouter.parseModelDetails(Data("<html>".utf8))) == nil)
+        } catch {
+            check("model detail checks could not run: \(error)", false)
         }
     }
 
