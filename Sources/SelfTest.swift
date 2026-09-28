@@ -27,6 +27,7 @@ enum SelfTest {
         checkHermesAdapter()
         checkClawdbotAdapter()
         checkRegistry()
+        checkKeychain()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -472,6 +473,47 @@ enum SelfTest {
         } catch {
             check("registry checks could not run: \(error)", false)
         }
+    }
+
+    /// Exercises the Keychain against the test-only `selftest` account, never
+    /// the `openrouter` account the app itself writes. A leftover item from an
+    /// interrupted run must not wedge the suite, so the first thing this does
+    /// is delete it; the upsert path is what makes the second set succeed. The
+    /// item is deleted again when the checks finish. Throwing calls are hoisted
+    /// out of `check`'s non-throwing autoclosure.
+    private static func checkKeychain() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+
+            // Clean slate: an item left by an interrupted run must not wedge this.
+            Keychain.delete(account: "selftest")
+
+            var setFailed = false
+            do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
+            check("keychain set succeeds", !setFailed)
+            check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
+
+            // Setting twice must overwrite, not fail: SecItemAdd on an existing
+            // item returns errSecDuplicateItem. A plain add would fail here.
+            var reSetFailed = false
+            do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
+            check("keychain set overwrites an existing value",
+                !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
+
+            Keychain.delete(account: "selftest")
+            check("keychain delete works", Keychain.get(account: "selftest") == nil)
+            check("import finds the pi openrouter credential",
+                Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
+
+            var noAuth = cfg
+            noAuth.piAuth = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-such-auth.json"
+            check("import returns nil when the file is absent",
+                Keychain.importFromPi(noAuth) == nil)
+        } catch {
+            check("keychain checks could not run: \(error)", false)
+        }
+        // Belt and braces: never leave the test account behind, even on failure.
+        Keychain.delete(account: "selftest")
     }
 
     /// Verifies stagedInTempDir copies within a temp dir, maps fixture names to
