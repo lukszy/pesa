@@ -52,8 +52,13 @@ enum Keychain {
         }
     }
 
-    static func delete(account: String) {
-        SecItemDelete(baseQuery(account: account) as CFDictionary)
+    /// Removing an already-absent key is a no-op, not an error: a second
+    /// clear-key action must not fail with nothing to remove.
+    static func delete(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        if status != errSecSuccess && status != errSecItemNotFound {
+            throw Failure(status: status)
+        }
     }
 
     /// Reads the OpenRouter credential already present in pi's auth file.

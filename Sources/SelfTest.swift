@@ -476,17 +476,13 @@ enum SelfTest {
     }
 
     /// Exercises the Keychain against the test-only `selftest` account, never
-    /// the `openrouter` account the app itself writes. A leftover item from an
-    /// interrupted run must not wedge the suite, so the first thing this does
-    /// is delete it; the upsert path is what makes the second set succeed. The
-    /// item is deleted again when the checks finish. Throwing calls are hoisted
-    /// out of `check`'s non-throwing autoclosure.
+    /// the `openrouter` account the app itself writes. `set` upserts, so a
+    /// leftover item from an interrupted run does not wedge the suite. The item
+    /// is deleted again when the checks finish. Throwing calls are hoisted out
+    /// of `check`'s non-throwing autoclosure.
     private static func checkKeychain() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
-
-            // Clean slate: an item left by an interrupted run must not wedge this.
-            Keychain.delete(account: "selftest")
 
             var setFailed = false
             do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
@@ -500,8 +496,17 @@ enum SelfTest {
             check("keychain set overwrites an existing value",
                 !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
 
-            Keychain.delete(account: "selftest")
+            var deleteThrew = false
+            do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
+            check("keychain delete succeeds", !deleteThrew)
             check("keychain delete works", Keychain.get(account: "selftest") == nil)
+
+            // Removing a key that is already gone is a no-op, not an error —
+            // otherwise a second clear-key action would fail spuriously.
+            var absentDeleteThrew = false
+            do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
+            check("deleting an absent key does not throw", !absentDeleteThrew)
+
             check("import finds the pi openrouter credential",
                 Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
 
@@ -513,7 +518,8 @@ enum SelfTest {
             check("keychain checks could not run: \(error)", false)
         }
         // Belt and braces: never leave the test account behind, even on failure.
-        Keychain.delete(account: "selftest")
+        do { try Keychain.delete(account: "selftest") }
+        catch { check("keychain cleanup failed: \(error)", false) }
     }
 
     /// Verifies stagedInTempDir copies within a temp dir, maps fixture names to
