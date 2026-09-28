@@ -1,21 +1,28 @@
 import Foundation
 
 enum SelfTest {
-    static var failures = 0
+    private static var results: [(name: String, condition: Bool)] = []
+
+    /// The single failure-accounting path, shared by `check` bookkeeping and
+    /// `run`'s exit status. Its own coverage is the canary below.
+    static func countFailures(_ checks: [(name: String, condition: Bool)]) -> Int {
+        checks.reduce(0) { $0 + ($1.condition ? 0 : 1) }
+    }
 
     static func check(_ name: String, _ condition: @autoclosure () -> Bool) {
-        if condition() {
-            print("PASS \(name)")
-        } else {
-            failures += 1
-            print("FAIL \(name)")
-        }
+        let passed = condition()
+        results.append((name, passed))
+        print(passed ? "PASS \(name)" : "FAIL \(name)")
     }
 
     static func run() -> Int32 {
-        check("harness detects a false condition", 1 == 1)
+        results = []
+        // Durable, non-vacuous canary: fails if countFailures regresses.
+        check("harness counts a failing check",
+              countFailures([("deliberate false", false), ("deliberate true", true)]) == 1)
         checkStaging()
-        return failures == 0 ? 0 : 1
+        let anyFailed = results.contains { !$0.condition }
+        return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
 
     /// Verifies stagedInTempDir copies within a temp dir, maps fixture names to
