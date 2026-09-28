@@ -33,6 +33,7 @@ enum SelfTest {
         checkKeychain()
         checkOpenRouter()
         checkSettings()
+        checkHarnessTiles()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -490,45 +491,50 @@ enum SelfTest {
     /// is deleted again when the checks finish. Throwing calls are hoisted out
     /// of `check`'s non-throwing autoclosure.
     private static func checkKeychain() {
-        do {
-            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+        var setFailed = false
+        do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
+        check("keychain set succeeds", !setFailed)
+        check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
 
-            var setFailed = false
-            do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
-            check("keychain set succeeds", !setFailed)
-            check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
+        // Setting twice must overwrite, not fail: SecItemAdd on an existing
+        // item returns errSecDuplicateItem. A plain add would fail here.
+        var reSetFailed = false
+        do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
+        check("keychain set overwrites an existing value",
+            !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
 
-            // Setting twice must overwrite, not fail: SecItemAdd on an existing
-            // item returns errSecDuplicateItem. A plain add would fail here.
-            var reSetFailed = false
-            do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
-            check("keychain set overwrites an existing value",
-                !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
+        var deleteThrew = false
+        do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
+        check("keychain delete succeeds", !deleteThrew)
+        check("keychain delete works", Keychain.get(account: "selftest") == nil)
 
-            var deleteThrew = false
-            do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
-            check("keychain delete succeeds", !deleteThrew)
-            check("keychain delete works", Keychain.get(account: "selftest") == nil)
+        // Removing a key that is already gone is a no-op, not an error —
+        // otherwise a second clear-key action would fail spuriously.
+        var absentDeleteThrew = false
+        do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
+        check("deleting an absent key does not throw", !absentDeleteThrew)
 
-            // Removing a key that is already gone is a no-op, not an error —
-            // otherwise a second clear-key action would fail spuriously.
-            var absentDeleteThrew = false
-            do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
-            check("deleting an absent key does not throw", !absentDeleteThrew)
-
-            check("import finds the pi openrouter credential",
-                Keychain.importFromPi(cfg) == "sk-or-v1-selftest-fixture-not-a-real-key")
-
-            var noAuth = cfg
-            noAuth.piAuth = (cfg.piSettings as NSString).deletingLastPathComponent + "/no-such-auth.json"
-            check("import returns nil when the file is absent",
-                Keychain.importFromPi(noAuth) == nil)
-        } catch {
-            check("keychain checks could not run: \(error)", false)
-        }
         // Belt and braces: never leave the test account behind, even on failure.
         do { try Keychain.delete(account: "selftest") }
         catch { check("keychain cleanup failed: \(error)", false) }
+    }
+
+    /// Pins `HarnessTiles`: a failed harness is invisible, a healthy one is a
+    /// tile, and the footer count is the number of excluded rows. Each check
+    /// fails if the rule inverts.
+    private static func checkHarnessTiles() {
+        let healthy = ToolRow(id: "pi", displayName: "pi", state: .unset, providers: [], writable: true)
+        let failed = ToolRow(id: "hermes", displayName: "hermes", state: .unset, providers: [], writable: false)
+        let errors = ["hermes": "unreadable"]
+
+        let visible = HarnessTiles.visible(rows: [healthy, failed], failed: errors)
+        check("a failed harness is excluded from the tiles", visible.map(\.id) == ["pi"])
+        check("a healthy harness is kept as a tile", visible.contains { $0.id == "pi" })
+        check("the failed count matches the excluded tiles",
+              HarnessTiles.failedCount(rows: [healthy, failed], failed: errors) == 1)
+        // A failure with no row (e.g. a hidden tool) must not inflate the footer.
+        check("the failed count ignores failures that are not rows",
+              HarnessTiles.failedCount(rows: [healthy], failed: ["hermes": "unreadable"]) == 0)
     }
 
     /// Exercises the pure OpenRouter parsers and the 24-hour catalog cache

@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusController = controller
         statusItem = controller.item
 
-        // Refresh once at launch; the timer and the Refresh button cover the rest.
+        // Refresh once at launch; the timer and the refresh icon cover the rest.
         Task { await state.refresh() }
     }
 
@@ -117,6 +117,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() { SettingsWindow.open() }
 
+    @objc private func openCredits() {
+        // Guarded optional: a malformed literal must not crash the app.
+        guard let url = URL(string: "https://openrouter.ai/settings/credits") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     /// Pops an `NSMenu` from the status item. `statusItem.menu` is assigned only
@@ -135,6 +141,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        let creditsItem = NSMenuItem(
+            title: "Buy credits…", action: #selector(openCredits), keyEquivalent: "")
+        creditsItem.target = self
+        menu.addItem(creditsItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
         quitItem.target = self

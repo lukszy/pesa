@@ -9,13 +9,17 @@ and no third-party dependencies. (It does spawn the clawdbot CLI on demand, but
 only while the popover is open and only to read or write clawdbot's config.)
 
 - **Balance** — remaining credit (`total_credits − total_usage`) from
-  OpenRouter's `GET /api/v1/credits`, rendered in the menu bar. It refreshes at
+  OpenRouter's `GET /api/v1/credits`, rendered in the menu bar and as the large
+  centred headline figure in the popover. It refreshes at
   launch, on a timer (default 10 minutes, configurable), and on demand with the
-  **Refresh** button. On a failed fetch the menu bar shows `—` and the popover
-  keeps the last known balance with its age.
-- **Models** — each detected tool's current `provider/model` is displayed, and
-  the built-in picker (or free text) writes a new one back to that tool's own
-  config.
+  refresh icon in the popover's top-trailing corner. On a failed fetch the menu
+  bar shows `—` and the popover keeps the last known balance with its age; a
+  balance that has never been fetched shows `—` in the same large style rather
+  than a `$0.00` lie.
+- **Models** — each detected tool is a tile showing its current
+  `provider/model` (or `unset`). Clicking a tile opens that tool's model editor
+  in its own window, where the built-in picker (or free text) writes a new one
+  back to that tool's own config.
 - **Agents load asynchronously** — the popover appears immediately and shows
   **Checking agents…** while detection runs, instead of waiting on clawdbot's
   CLI, which can take seconds.
@@ -23,7 +27,11 @@ only while the popover is open and only to read or write clawdbot's config.)
 ## Supported tools
 
 Only tools detected on this machine are listed. A detected tool with no model
-configured shows `unset`. A tool that is not detected is hidden.
+configured shows `unset`. A tool that is not detected is hidden, and a detected
+tool whose config cannot be read is omitted from the tiles — a single subdued
+line below the grid reports how many harnesses could not be read, so the
+failure is not silent. A read-only tool (clawdbot with no resolvable CLI) still
+gets a tile; its editor opens with **Set** disabled.
 
 | Tool | Detected by | Reads | Writes |
 |---|---|---|---|
@@ -108,8 +116,7 @@ The OpenRouter key is stored in the macOS Keychain only, as a generic password:
 
 It is never written to a plain file, logged, or included in an error message.
 The app offers **Test key** (calls `/credits` and reports the result) and
-**Import from pi** (one-click import of the OpenRouter credential already in
-`~/.pi/agent/auth.json`).
+**Clear**.
 
 To remove the key:
 
@@ -138,11 +145,19 @@ Settings live in
 
 The file is plain JSON and contains no secrets.
 
-The settings UI is a standard macOS **Settings** window, opened from the gear
-button in the popover header or **Settings…** in the app menu (⌘,). The popover
-itself holds only the balance header and the detected-agent rows.
-Right-clicking the menu bar icon opens a small menu with **Settings…** and
+The settings UI is a standard macOS **Settings** window, opened from
+**Settings…** in the app menu (⌘,) or **Settings…** in the status item's
+right-click menu. There is no gear control in the popover header, so settings
+are reachable only from those two menus. The popover itself holds only the
+centred balance header, the refresh icon, and the detected-agent tiles.
+Right-clicking the menu bar icon opens a small menu with **Settings…**, **Buy
+credits…** (opens OpenRouter's credits page in the default browser), and
 **Quit**; left-clicking still toggles the popover.
+
+The per-agent model editor opens in its own AppKit window (one window,
+retargeted to the clicked harness) rather than in a SwiftUI scene, because the
+popover sits outside the SwiftUI scene graph and `openWindow` is unreliable
+there.
 
 ### Launch at login
 
