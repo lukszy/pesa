@@ -392,8 +392,20 @@ git commit -m "feat: pi adapter with catalog, provider discovery and safe writes
 ### Task 5: opencode adapter
 
 **Files:**
-- Create: `Sources/opencode.swift` if `Tools.swift` exceeds ~250 lines, otherwise add to `Sources/Tools.swift`; `Tests/fixtures/opencode-auth.json`
+- Create: `Tests/fixtures/opencode-auth.json`
 - Modify: `Sources/Tools.swift`, `Sources/SelfTest.swift`
+
+All four adapters live in `Sources/Tools.swift`; there is no separate per-adapter file. If that file grows past roughly 250 lines by Task 8, report it as a concern rather than splitting it on your own initiative.
+
+**Fixture content — binding.** `Tests/fixtures/opencode-auth.json` supplies the authenticated providers that `opencode.json`'s `provider` block does not list. `Tests/fixtures/opencode.json` (created by Task 3, and not to be modified) already carries `omlx` and `lmstudio` in its `provider` block, so this file only needs to add `openrouter`, which gives the provider union all three sources:
+
+```json
+{
+  "openrouter": { "type": "api_key", "key": "not-a-real-key" }
+}
+```
+
+No real credentials; `not-a-real-key` is the only key-shaped string.
 
 **Interfaces:**
 - Consumes: everything from Task 4.
