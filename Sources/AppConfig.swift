@@ -29,14 +29,16 @@ struct AppConfig: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        refreshMinutes = try c.decodeIfPresent(Int.self, forKey: .refreshMinutes) ?? 10
-        launchAtLogin = try c.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
-        hiddenTools = try c.decodeIfPresent([String].self, forKey: .hiddenTools) ?? []
-        binaryPathOverrides = try c.decodeIfPresent([String: String].self, forKey: .binaryPathOverrides) ?? [:]
-        showMoneyInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar) ?? true
-        showIconInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar) ?? true
-        notifyBelowEnabled = try c.decodeIfPresent(Bool.self, forKey: .notifyBelowEnabled) ?? false
-        notifyBelowAmount = try c.decodeIfPresent(Double.self, forKey: .notifyBelowAmount) ?? 5.0
+        // `try?` around each field: a present-but-mistyped value ({"refreshMinutes": "10"})
+        // throws from decodeIfPresent and must cost only its own field, not the struct.
+        refreshMinutes = (try? c.decodeIfPresent(Int.self, forKey: .refreshMinutes)) ?? 10
+        launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
+        hiddenTools = (try? c.decodeIfPresent([String].self, forKey: .hiddenTools)) ?? []
+        binaryPathOverrides = (try? c.decodeIfPresent([String: String].self, forKey: .binaryPathOverrides)) ?? [:]
+        showMoneyInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar)) ?? true
+        showIconInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar)) ?? true
+        notifyBelowEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .notifyBelowEnabled)) ?? false
+        notifyBelowAmount = (try? c.decodeIfPresent(Double.self, forKey: .notifyBelowAmount)) ?? 5.0
     }
 
     /// Never throws: a missing or undecodable file is the defaults.
@@ -55,6 +57,6 @@ struct AppConfig: Codable {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self).write(to: URL(fileURLWithPath: path))
+        try encoder.encode(self).write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }

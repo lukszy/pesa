@@ -629,7 +629,17 @@ enum SelfTest {
             try "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
             let older = AppConfig.load(from: settingsPath)
             check("an older settings file keeps its values and gains the new defaults",
-                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.notifyBelowEnabled)
+                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.notifyBelowEnabled
+                      && older.hiddenTools.isEmpty && older.binaryPathOverrides.isEmpty && !older.launchAtLogin && older.notifyBelowAmount == 5.0)
+
+            // A present-but-mistyped value must cost only its own field: without
+            // `try?` per field the whole decode throws and refreshMinutes resets
+            // to 10, so this check fails if the guard is removed.
+            try "{\"refreshMinutes\": 33, \"notifyBelowAmount\": \"not-a-number\"}"
+                .write(toFile: settingsPath, atomically: true, encoding: .utf8)
+            let mistyped = AppConfig.load(from: settingsPath)
+            check("a mistyped value falls back to its own default and keeps the rest",
+                  mistyped.notifyBelowAmount == 5.0 && mistyped.refreshMinutes == 33)
 
             let defaults = AppConfig.load(from: root + "/config-that-does-not-exist.json")
             check("defaults show the money and icon and leave alerts off",
@@ -644,6 +654,8 @@ enum SelfTest {
             check("both hidden still renders something clickable", { let p = MenuBarPresentation.of(showMoney: false, showIcon: false, balance: 17.1, error: false); return p.text != nil || p.symbol != nil }())
             check("an error renders the em dash", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true) == (text: "—", symbol: "dollarsign.circle"))
             check("a balance that was never fetched renders no money text", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+            check("money shown, icon hidden and no balance yet still renders the icon", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+            check("money shown, icon hidden and an error still renders the money", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: true) == (text: "—", symbol: nil))
 
             // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
             check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))

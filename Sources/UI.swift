@@ -5,10 +5,6 @@ import Foundation
 enum MenuBarPresentation {
     static func of(showMoney: Bool, showIcon: Bool, balance: Double?, error: Bool)
         -> (text: String?, symbol: String?) {
-        // A status item with neither text nor image has nothing to click, which
-        // would leave the app running but unreachable. The icon is the fallback.
-        let symbol: String? = (showIcon || !showMoney) ? "dollarsign.circle" : nil
-
         let text: String?
         if !showMoney {
             text = nil
@@ -20,6 +16,12 @@ enum MenuBarPresentation {
             // Never fetched: render nothing rather than a $0.00 lie.
             text = nil
         }
+
+        // A status item with neither text nor image has nothing to click, which
+        // would leave the app running but unreachable. Derive the fallback from
+        // `text`, not from `showMoney`: money-on/icon-off with no balance yet is
+        // reachable (a fetch in flight leaves error false and balance nil).
+        let symbol: String? = (showIcon || text == nil) ? "dollarsign.circle" : nil
         return (text: text, symbol: symbol)
     }
 }
