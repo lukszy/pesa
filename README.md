@@ -4,8 +4,9 @@ A macOS menu bar app that shows your OpenRouter remaining balance and lets you
 read and change the model configured in the coding agents installed on your
 machine — from one popover.
 
-The app is a single `LSUIElement` process: no Dock icon, no daemon, no helper
-process, no third-party dependencies.
+The app is a single `LSUIElement` process: no Dock icon, no persistent daemon,
+and no third-party dependencies. (It does spawn the clawdbot CLI on demand, but
+only while the popover is open and only to read or write clawdbot's config.)
 
 - **Balance** — remaining credit (`total_credits − total_usage`) from
   OpenRouter's `GET /api/v1/credits`, rendered in the menu bar. It refreshes at
@@ -31,10 +32,16 @@ configured shows `unset`. A tool that is not detected is hidden.
 Every write backs the previous file up to `<file>.bak`. The file-based
 adapters (pi, opencode, hermes) then apply the change atomically via a
 same-directory temp file plus rename; clawdbot's write is performed by its own
-CLI. Model references split on the **first** `/` only, so ids that
-contain slashes (`deepseek/deepseek-v4.1-flash`) and colons (`qwen3.8:latest`)
-work. Providers are listed only when the tool actually has them configured or
-authenticated; the model dropdown always accepts free text.
+CLI. Because **pi writes two keys** (`defaultProvider` then `defaultModel`) as
+two backed-up writes, its `.bak` may hold the state after the first of the two
+— the new provider with the old model — rather than the original file.
+
+Model references split on the **first** `/` only, so ids that contain slashes
+(`deepseek/deepseek-v4.1-flash`) and colons (`qwen3.8:latest`) work. Provider
+dropdowns list the providers a tool has configured or authenticated; **hermes
+is the exception** — it also offers a built-in curated list of providers it
+supports even if they are not configured yet, since a hermes user may be about
+to set one up. The model dropdown always accepts free text.
 
 **clawdbot is written through its own CLI, not by editing the file.** Its
 config (`~/.clawdbot/clawdbot.json`) is JSON5 with comments and trailing commas,
@@ -113,10 +120,13 @@ is required rather than pretending the setting worked.
 
 ### Menu bar presentation
 
-The balance and the icon are two independent toggles. When **both** are cleared
-the icon is still rendered, because a status item with nothing to render has
-nothing to click and the app would become impossible to open or quit. Hiding the
-balance affects only the menu bar; the popover always shows it.
+The balance and the icon are two independent toggles. The invariant is: **if the
+text is nil, the icon is present** — a status item must always render something
+clickable. That covers the both-cleared case (the icon is still drawn) and also
+money-shown/icon-hidden before the first successful fetch, when there is no
+balance text yet. A status item with nothing to render would have nothing to
+click and the app would become impossible to open or quit. Hiding the balance
+affects only the menu bar; the popover always shows it.
 
 ### Low-balance alert
 
