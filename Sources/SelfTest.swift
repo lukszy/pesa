@@ -235,8 +235,22 @@ enum SelfTest {
             check("hermes kept the plugins block", configAfter.contains("orca-status"))
 
             let providers = try he.providers()
+            // `synthetic` is neither curated nor in the fixture YAML, so this
+            // fails if the `*_API_KEY` parsing is removed. `openrouter` alone
+            // would not: it is already in the curated list.
             check("hermes providers include env-configured ones",
-                  Set(providers).isSuperset(of: ["openrouter"]))
+                  Set(providers).isSuperset(of: ["openrouter", "synthetic"]))
+
+            // A nested providers: section must not be read as the top-level one:
+            // only a column-0 header is the section this adapter reads.
+            let nestedPath = (cfg.piSettings as NSString).deletingLastPathComponent + "/nested-providers.yaml"
+            try "llm:\n  providers:\n    bogus:\n      model: x\n"
+                .write(toFile: nestedPath, atomically: true, encoding: .utf8)
+            var nestedCfg = cfg
+            nestedCfg.hermesConfig = nestedPath
+            let nested = try Tools.hermes(nestedCfg).providers()
+            check("a nested providers: section is not read as the top-level one",
+                  !nested.contains("bogus"))
 
             // A top-level providers: mapping contributes provider names. The key
             // is deliberately outside the curated list, so the check can fail.

@@ -180,7 +180,10 @@ private func yamlMappingKeys(_ section: String, in path: String) throws -> Set<S
         let indent = raw.prefix { $0 == " " }.count
 
         guard let base = sectionIndent else {
-            if entry.hasPrefix("\(section):") { sectionIndent = indent }
+            // Only a column-0 header is the top-level section. A `providers:`
+            // nested under another top-level key must not be accepted, or its
+            // child keys surface as provider names the config does not have.
+            if indent == 0 && entry.hasPrefix("\(section):") { sectionIndent = indent }
             continue
         }
         if indent <= base { break }
