@@ -14,7 +14,7 @@
 
 - Executable and app name: `ProviderCostController`. Bundle identifier `local.provider-cost-controller`.
 - Deployment target macOS 13.0. Build with `swiftc`, never SwiftPM (`swift package` cannot link `PackageDescription` under Command Line Tools).
-- Build command: `swiftc -O -o .build/ProviderCostController Sources/*.swift -framework AppKit -framework SwiftUI -framework Security -framework ServiceManagement -target $(uname -m)-apple-macosx13.0`
+- Build command: `swiftc -O -o .build/ProviderCostController Sources/*.swift -framework AppKit -framework SwiftUI -framework Security -framework ServiceManagement -framework UserNotifications -target $(uname -m)-apple-macosx13.0`
 - No XCTest. All automated checks are `assert`-based, run by `--selftest`, exit 0 on pass and 1 on failure.
 - No third-party dependencies.
 - Balance = `total_credits − total_usage` from `GET /api/v1/credits`, displayed to exactly two decimals (`$17.10`).
@@ -36,6 +36,7 @@ These are the failure modes the spec implies but no task's own tests cover. Each
 3. **Model ids with extra separators** — `ollama/qwen3.8:latest`, `openrouter/anthropic/claude-fable-latest`. Expected: provider is the first segment, the model is everything after it, nothing truncated or re-joined. → Task 3.
 4. **The file changed on disk between read and write** (another process edited it). Expected: the write does not silently clobber; `.bak` holds the state immediately before the write. → Task 3.
 5. **OpenRouter returns a non-2xx, an HTML error page, or JSON missing `total_credits`.** Expected: no crash, error surfaced in the popover, previous balance kept and labelled with its age. → Task 10.
+6. **A settings file written by an earlier version of this app, missing the keys that were added later.** Expected: the user's existing values survive and only the absent keys take their defaults — decoding the whole struct must not fail, because a failed decode falls back to *all* defaults and would silently reset every setting the user had chosen. This will really happen: the app owns this file and its schema grows across versions. → Task 11.
 
 ---
 
@@ -431,7 +432,7 @@ SelfTest.check("opencode preserved its provider block",
 
 - [ ] **Step 3: Implement the opencode adapter**
 
-`detect` is file-exists on `opencodeConfig` or PATH. `currentModel` reads the top-level `model` and parses it. `providers` is the union of the config's `provider` keys and `opencodeAuth` keys. `models` returns the model ids already configured for that provider in the config, and an empty list otherwise, since the UI accepts free text. Do **not** call `OpenRouter` from this file — it does not exist until Task 10; Task 11 injects the catalog for provider `openrouter`. `setModel` writes `"provider/model"` to the top-level `model` key.
+`detect` is file-exists on `opencodeConfig` or PATH. `currentModel` reads the top-level `model` and parses it. `providers` is the union of the config's `provider` keys and `opencodeAuth` keys. `models` returns the model ids already configured for that provider in the config, and an empty list otherwise, since the UI accepts free text. Do **not** call `OpenRouter` from this file — it does not exist until Task 10; Task 12 injects the catalog for provider `openrouter`. `setModel` writes `"provider/model"` to the top-level `model` key.
 
 - [ ] **Step 4: Run to verify it passes.**
 
@@ -664,18 +665,19 @@ git commit -m "feat: openrouter credits client with cached model catalog"
 
 ---
 
-### Task 11: App settings, popover UI, refresh timer, launch at login
+### Task 11: Settings model, menu bar presentation, and balance-alert decisions
 
 **Files:**
 - Create: `Sources/AppConfig.swift`, `Sources/UI.swift`
-- Modify: `Sources/main.swift`, `Sources/SelfTest.swift`, `Sources/Tools.swift` (wire the catalog into `models`)
+- Modify: `Sources/SelfTest.swift`
 
 **Interfaces:**
-- Consumes: `Tools.detected`, `OpenRouter`, `Keychain`, `AppConfig`.
-- Produces: `struct AppConfig: Codable` with `refreshMinutes: Int = 10`, `launchAtLogin: Bool = false`, `hiddenTools: [String] = []`, `binaryPathOverrides: [String: String] = [:]`, `static let path: String`, `static func load(from path: String = AppConfig.path) -> AppConfig`, `func save(to path: String = AppConfig.path) throws`. The path parameter is what keeps the selftest off the real settings file.
-- Produces: `final class AppState: ObservableObject` with `@Published var remaining: Double?`, `lastUpdated: Date?`, `errorText: String?`, `rows: [ToolRow]`, and `func refresh() async`, `func setModel(_ ref: ToolModelRef, for adapterID: String)`.
-- Produces: `struct ToolRow { let id: String; let displayName: String; let state: ToolState; let providers: [String]; let writable: Bool }`.
-- Produces: `struct PopoverView: View { @ObservedObject var state: AppState }`.
+- Produces: `struct AppConfig: Codable` with `refreshMinutes: Int = 10`, `launchAtLogin: Bool = false`, `hiddenTools: [String] = []`, `binaryPathOverrides: [String: String] = [:]`, `showMoneyInMenuBar: Bool = true`, `showIconInMenuBar: Bool = true`, `notifyBelowEnabled: Bool = false`, `notifyBelowAmount: Double = 5.0`, `static let path: String`, `static func load(from path: String = AppConfig.path) -> AppConfig`, `func save(to path: String = AppConfig.path) throws`. The path parameter is what keeps the selftest off the real settings file.
+- Produces: `enum MenuBarPresentation` with `static func of(showMoney: Bool, showIcon: Bool, balance: Double?, error: Bool) -> (text: String?, symbol: String?)`, which decides what the status item renders.
+- Produces: `enum BalanceAlert` with `static func shouldNotify(previous: Double?, current: Double?, threshold: Double, enabled: Bool, authorized: Bool) -> Bool`, which decides whether to raise a low-balance notification.
+- Does **not** produce `AppState` or `PopoverView` — Task 12 owns those and consumes these two functions.
+
+These two functions are pure, and that is the point: they encode the two behaviours that cannot be observed programmatically here (what the menu bar renders, and whether a notification should fire), so they are the parts that can actually be tested.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -683,41 +685,127 @@ git commit -m "feat: openrouter credits client with cached model catalog"
 let root = (cfg.piSettings as NSString).deletingLastPathComponent
 let settingsPath = root + "/app-config.json"
 SelfTest.check("app settings round-trip", { var c = AppConfig.load(from: settingsPath); c.refreshMinutes = 42; try c.save(to: settingsPath); return AppConfig.load(from: settingsPath).refreshMinutes == 42 }())
+SelfTest.check("the menu bar and alert fields round-trip", {
+    var c = AppConfig.load(from: settingsPath)
+    c.showMoneyInMenuBar = false; c.showIconInMenuBar = false
+    c.notifyBelowEnabled = true; c.notifyBelowAmount = 12.5
+    try c.save(to: settingsPath)
+    let r = AppConfig.load(from: settingsPath)
+    return !r.showMoneyInMenuBar && !r.showIconInMenuBar && r.notifyBelowEnabled && r.notifyBelowAmount == 12.5
+}())
 SelfTest.check("a corrupt settings file falls back to defaults", { try? "not json".write(toFile: settingsPath, atomically: true, encoding: .utf8); return AppConfig.load(from: settingsPath).refreshMinutes == 10 }())
+SelfTest.check("an older settings file keeps its values and gains the new defaults", {
+    try? "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
+    let c = AppConfig.load(from: settingsPath)
+    return c.refreshMinutes == 33 && c.showMoneyInMenuBar && c.showIconInMenuBar && !c.notifyBelowEnabled
+}())
+SelfTest.check("defaults show the money and icon and leave alerts off", {
+    let c = AppConfig.load(from: root + "/config-that-does-not-exist.json")
+    return c.showMoneyInMenuBar && c.showIconInMenuBar && !c.notifyBelowEnabled
+}())
 SelfTest.check("the selftest never targets the real settings path", settingsPath != AppConfig.path)
+
+// The status item must never be left with nothing to render, or it cannot be clicked.
+SelfTest.check("money and icon both on renders both", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false) == (text: "$17.10", symbol: "dollarsign.circle"))
+SelfTest.check("money hidden renders the icon alone", MenuBarPresentation.of(showMoney: false, showIcon: true, balance: 17.1, error: false) == (text: nil, symbol: "dollarsign.circle"))
+SelfTest.check("icon hidden renders the money alone", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false) == (text: "$17.10", symbol: nil))
+SelfTest.check("both hidden still renders something clickable", { let p = MenuBarPresentation.of(showMoney: false, showIcon: false, balance: 17.1, error: false); return p.text != nil || p.symbol != nil }())
+SelfTest.check("an error renders the em dash", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true) == (text: "—", symbol: "dollarsign.circle"))
+SelfTest.check("a balance that was never fetched renders no money text", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+
+// Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
+SelfTest.check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))
+SelfTest.check("no alert when permission was refused", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: true, authorized: false))
+SelfTest.check("no alert at launch when already below the threshold", !BalanceAlert.shouldNotify(previous: nil, current: 3, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("no alert when the fetch failed", !BalanceAlert.shouldNotify(previous: 20, current: nil, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("no alert while already below", !BalanceAlert.shouldNotify(previous: 3, current: 2, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("no alert when both readings are above", !BalanceAlert.shouldNotify(previous: 20, current: 19, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("an alert on the crossing itself", BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("exactly at the threshold is not below it", !BalanceAlert.shouldNotify(previous: 20, current: 5, threshold: 5, enabled: true, authorized: true))
+SelfTest.check("one cent under the threshold alerts", BalanceAlert.shouldNotify(previous: 20, current: 4.99, threshold: 5, enabled: true, authorized: true))
 ```
 
 Every selftest write must go to the temp directory. The selftest must never write to `~/.pi`, `~/.config`, `~/.hermes`, `~/.clawdbot`, or `~/Library`.
 
-- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 2: Run to verify it fails** — build failure, `AppConfig` undefined.
 
-- [ ] **Step 3: Implement `AppConfig`**
+- [ ] **Step 3: Implement `AppConfig` in `Sources/AppConfig.swift`**
 
-Load returns defaults for every field when the file is absent or undecodable; save writes with `JSONSerialization` pretty-printed and sorted keys. `load` must never throw.
+Load returns defaults for every field when the file is absent or undecodable, and `load` must never throw. Save writes with `JSONSerialization`, pretty-printed. Because `load` is how the two new booleans and the threshold survive a relaunch, a field that is absent from an older settings file must fall back to its default rather than decoding to `false` — decoding failure must not silently disable a feature the user turned on.
 
-- [ ] **Step 4: Implement `UI.swift` and wire `main.swift`**
+- [ ] **Step 4: Implement `MenuBarPresentation` and `BalanceAlert` in `Sources/UI.swift`**
 
-One scrolling `PopoverView`: header (`$17.10`, fetched-at time, Refresh button), one `ToolRow` per detected tool showing `name — provider/model` or `unset` with a Change… control, and a collapsed Settings disclosure holding the API key field with Test key, the refresh interval field, a launch-at-login toggle, and the tool path overrides. On any fetch failure set `errorText` and the title to `—` while keeping `remaining` and `lastUpdated` so the popover can show the last known balance with its age.
+`MenuBarPresentation.of` formats the balance as `String(format: "$%.2f", …)`. Its rules, in order:
 
-The status item title is set from `AppState`: `$X.YZ` or `—`. The refresh timer runs every `refreshMinutes`, plus once at launch. Launch at login uses `SMAppService.mainApp.register()`/`unregister()`, driven by the toggle.
+1. `symbol` is `"dollarsign.circle"` when `showIcon` is true, and `nil` when it is false — **unless** `showMoney` is also false, in which case `symbol` is `"dollarsign.circle"` regardless. A status item with neither text nor image has nothing to click, which would leave the app running but unreachable, so the last-possible-toggle case must still render.
+2. `text` is `nil` when `showMoney` is false; `"—"` when `error` is true; `nil` when the balance has never been fetched; otherwise the formatted balance.
+   A never-fetched balance must render nothing rather than `$0.00`, which would be a lie about the account.
 
-**Catalog wiring.** `ToolAdapter.models` is synchronous and `OpenRouter.models()` is async, so they cannot be connected directly. At each refresh, fetch the catalog once asynchronously into a module-level cache; each adapter's `models` closure reads that cache synchronously and falls back to the tool's own configured models when the cache is empty. A failed catalog fetch must never fail the whole refresh.
+`BalanceAlert.shouldNotify` returns true only when `enabled` **and** `authorized` **and** `previous` is non-nil and at or above `threshold` **and** `current` is non-nil and strictly below `threshold`. Note the consequences deliberately: a balance already below the threshold at launch does not alert, because nothing was crossed, and a failed fetch (`current == nil`) cannot alert. Do not "helpfully" fire on the first below-threshold reading; that would alert every ten minutes and is the exact spam this rule exists to prevent.
 
-- [ ] **Step 5: Run to verify it passes, then verify by hand**
-
-Run: `./scripts/build-app.sh && open ProviderCostController.app`
-Expected: the menu bar shows the real balance (near `$17.10` at time of writing); opening the popover lists pi and opencode as configured, hermes and clawdbot as unset; changing a model updates that tool's file and its row. Confirm `~/.pi/agent/settings.json` and `~/.config/opencode/opencode.json` still have their original key order.
+- [ ] **Step 5: Run to verify it passes.**
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Sources/AppConfig.swift Sources/UI.swift Sources/main.swift Sources/Tools.swift Sources/SelfTest.swift
-git commit -m "feat: popover UI, refresh timer, settings, and launch at login"
+git add Sources/AppConfig.swift Sources/UI.swift Sources/SelfTest.swift
+git commit -m "feat: settings model, menu bar presentation and balance-alert decisions"
 ```
 
 ---
 
-### Task 12: README and final verification
+### Task 12: Popover UI, refresh timer, launch at login, and alert delivery
+
+**Files:**
+- Modify: `Sources/UI.swift`, `Sources/main.swift`, `Sources/Tools.swift` (wire the catalog into `models`), `Sources/SelfTest.swift`, `scripts/build.sh`
+
+**Interfaces:**
+- Consumes: `AppConfig`, `MenuBarPresentation`, `BalanceAlert`, `Tools.detected`, `OpenRouter`, `Keychain`.
+- Produces: `final class AppState: ObservableObject` with `@Published var remaining: Double?`, `lastUpdated: Date?`, `errorText: String?`, `rows: [ToolRow]`, `func refresh() async`, `func setModel(_ ref: ToolModelRef, for adapterID: String)`.
+- Produces: `struct ToolRow { let id: String; let displayName: String; let state: ToolState; let providers: [String]; let writable: Bool }`.
+- Produces: `struct PopoverView: View { @ObservedObject var state: AppState }`.
+
+- [ ] **Step 1: Add the notification framework to the build**
+
+`scripts/build.sh` must link `-framework UserNotifications`, because `UserNotifications` is not currently in its framework list and the build will fail without it. Keep the existing flags and target unchanged.
+
+- [ ] **Step 2: Implement `AppState`, `PopoverView`, and wire `main.swift`**
+
+One scrolling `PopoverView`: header (`$17.10`, fetched-at time, Refresh button), one `ToolRow` per detected tool showing `name — provider/model` or `unset` with a Change… control, and a collapsed Settings disclosure holding:
+
+- the API key field with Test key,
+- the refresh interval field,
+- a **Menu bar** group: a show-balance checkbox and a show-icon checkbox, with a line of explanatory text stating that the icon stays visible when both are cleared, because the item must remain clickable,
+- an **Alerts** group: an enable-low-balance-alert checkbox and a threshold amount field, plus the current OS permission state so a user can tell a blocked alert from a broken one,
+- a launch-at-login checkbox,
+- the tool path overrides.
+
+The status item renders whatever `MenuBarPresentation.of` returns for the current state — never a hand-rolled `$X.YZ`/`—` branch inside the view. On a fetch failure set `errorText` and keep `remaining` and `lastUpdated` so the popover can show the last known balance with its age. The refresh timer runs every `refreshMinutes`, plus once at launch. Launch at login uses `SMAppService.mainApp.register()`/`unregister()`, driven by the checkbox.
+
+**Catalog wiring.** `ToolAdapter.models` is synchronous and `OpenRouter.models()` is async, so they cannot be connected directly. At each refresh, fetch the catalog once asynchronously into a module-level cache; each adapter's `models` closure reads that cache synchronously and falls back to the tool's own configured models when the cache is empty. A failed catalog fetch must never fail the whole refresh.
+
+- [ ] **Step 3: Wire balance-alert delivery**
+
+`AppState` keeps the previous successful balance reading. On each successful fetch, compute `BalanceAlert.shouldNotify(previous:current:threshold:enabled:authorized:)`; when it returns true, post a `UNNotificationRequest` with the balance and the threshold, then update the stored previous reading. Request authorization once, when the user first enables the alert, and store the resulting state so the settings panel can display it. A refused permission must never re-prompt and must never fail the refresh.
+
+Notification display cannot be asserted from the suite, so keep the decision in `BalanceAlert` (already covered in Task 11) and keep the delivery call as thin as possible: resolve the decision, post, update state. Do not add a second decision path in the view or the timer.
+
+- [ ] **Step 4: Run to verify it passes, then verify by hand**
+
+Run: `./scripts/build.sh && ./.build/ProviderCostController --selftest; echo "exit=$?"`
+Expected: every check PASS, `exit=0`, and zero compiler warnings.
+Run: `./scripts/build-app.sh && open ProviderCostController.app`
+Expected: the menu bar shows the real balance (near `$17.10` at time of writing); opening the popover lists pi and opencode as configured, hermes and clawdbot as unset; toggling each menu bar checkbox re-renders the item and clearing both leaves the icon visible; changing a model updates that tool's file and its row. Confirm `~/.pi/agent/settings.json` and `~/.config/opencode/opencode.json` still have their original key order.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Sources/UI.swift Sources/main.swift Sources/Tools.swift Sources/SelfTest.swift scripts/build.sh
+git commit -m "feat: popover UI, refresh timer, launch at login, and balance-alert delivery"
+```
+
+---
+### Task 13: README and final verification
 
 **Files:**
 - Create: `README.md`
@@ -725,7 +813,7 @@ git commit -m "feat: popover UI, refresh timer, settings, and launch at login"
 
 - [ ] **Step 1: Write `README.md`**
 
-Cover: what it does, the four supported tools and the exact file each one writes, the build command and the CLT-only rationale, the `--selftest` and `--probe` flags, the Keychain service name and how to remove the key, and an explicit list of what is not implemented (per-model 30-day stats, codex/claude/aider/droid/gptme adapters, writing the key into other tools' configs).
+Cover: what it does, the four supported tools and the exact file each one writes, the build command and the CLT-only rationale, the `--selftest` and `--probe` flags, the Keychain service name and how to remove the key, the settings file path, launch at login, the two menu bar toggles (and that the icon stays visible when both are off, so the item remains clickable), the opt-in low-balance alert and how to change or disable its threshold, and an explicit list of what is not implemented (per-model 30-day stats, codex/claude/aider/droid/gptme adapters, writing the key into other tools' configs).
 
 - [ ] **Step 2: Run the full suite**
 
@@ -752,12 +840,12 @@ git commit -m "docs: README with supported tools, flags, and known limitations"
 
 ## Self-Review
 
-**Spec coverage:** Menu bar balance → Tasks 1, 10, 11. Settings for the API key → Tasks 9, 11. Tool detection and per-tool current model → Tasks 4–8. Model/provider selection writing to config → Tasks 3–7, 11. App settings file → Task 11. Launch at login → Task 11. Error handling section → Tasks 4 (read-only), 8 (unreadable config), 10 (bad responses), 11 (title falls back to `—`, last-known balance with age). Verification section → Tasks 2–11 build it incrementally, Task 12 runs it whole. Non-goals → nothing implements them; Task 12's README states them. Deferred items have no task, by design.
+**Spec coverage:** Menu bar balance → Tasks 1, 10, 12. Settings for the API key → Tasks 9, 12. Tool detection and per-tool current model → Tasks 4–8. Model/provider selection writing to config → Tasks 3–7, 12. App settings file → Task 11. Menu bar presentation rules, including the both-toggles-off case and the never-fetched balance → Task 11. Balance-alert crossing rule → Task 11; its delivery and the permission state → Task 12. Launch at login → Task 12. Error handling section → Tasks 4 (read-only), 8 (unreadable config), 10 (bad responses), 12 (title falls back to `—`, last-known balance with age). Verification section → Tasks 2–12 build it incrementally, Task 13 runs it whole. Non-goals → nothing implements them; Task 13's README states them. Deferred items have no task, by design.
 
 **Step scan:** Every step names either an exact assertion or an exact signature. The two places carrying more than a signature are `ConfigFile`'s targeted-edit rules and `parseCredits`' missing-field rule, both of which the tests alone do not disambiguate.
 
 **Type consistency:** `ToolModelRef`, `ToolPaths`, `ToolAdapter`, `ToolState`, `ConfigError`, `Credits`, and `AppConfig` are named identically in every task that uses them. `tools` in Task 4 is the adapter family, `ToolRow` is the UI projection — distinct names for distinct things.
 
-**Review Focus:** #1 → Task 4 step 5. #2 → Task 7 step 1. #3 → Task 3 step 1. #4 → Task 3 step 1 (`.bak` asserted against the pre-write bytes). #5 → Task 10 step 1 plus Task 11 step 4.
+**Review Focus:** #1 → Task 4 step 5. #2 → Task 7 step 1. #3 → Task 3 step 1. #4 → Task 3 step 1 (`.bak` asserted against the pre-write bytes). #5 → Task 10 step 1 plus Task 12 step 4. #6 → Task 11 step 1.
 
 **Proportion:** The plan is longer than the spec because it carries the interfaces the spec leaves open — path injection, the four adapter factories, and the parse seam. No task contains a full function body except where the tests cannot determine the algorithm.

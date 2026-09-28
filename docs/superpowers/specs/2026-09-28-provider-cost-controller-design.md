@@ -37,8 +37,8 @@ and preferences live in a config file rather than being hardcoded.
   `usage_monthly`). Available and nearly free, but dropped by decision.
 - Adapters for codex, claude, aider, droid, gptme, cursor. Codex in particular
   is installed *and* configured on the reference machine.
-- Per-project model configuration, notifications, spend graphs/history,
-  sandboxing, notarization, auto-update.
+- Per-project model configuration, spend graphs/history, sandboxing,
+  notarization, auto-update.
 - Writing the OpenRouter key into each tool's own config (e.g.
   `~/.hermes/.env`). The key is for this app only. See
   [Future work](#future-work).
@@ -121,7 +121,8 @@ single `LSUIElement` process.
 - Refresh triggers: at launch, on a timer (default 10 minutes, configurable),
   and via a Refresh button in the popover.
 - On failure the title falls back to `—` and the popover shows the error text.
-  No modal alerts, no dock icon, no notification banners.
+  No modal alerts and no dock icon. The only notification the app may raise is
+  the opt-in low-balance alert described under Settings.
 
 ### OpenRouter layer
 
@@ -199,8 +200,46 @@ Behaviour:
 - launch at login (via `SMAppService`)
 - per-tool binary path override, so a non-standard install can be pointed at
 - hidden tools
+- whether the menu bar shows the balance
+- whether the menu bar shows the icon
+- whether the low-balance alert is on, and its threshold in dollars
 
 Plain JSON. Contains no secrets.
+
+### Menu bar presentation
+
+Two independent toggles control what the status item renders: the balance text
+and the icon.
+
+- Money shown, icon shown — `$17.10` beside the icon.
+- Money hidden, icon shown — the icon alone, which is the compact form.
+- Money shown, icon hidden — the balance text alone.
+- Both hidden — the icon is still rendered.
+
+The last case is deliberate. A status item with no text and no image has nothing
+to click, which would leave the app running and unreachable. The settings panel
+states this, so the behaviour is not a surprise.
+
+On a failed fetch the money text becomes `—` (and the last known balance is shown
+in the popover with its age). A balance that has never been fetched renders no
+money text at all, rather than a misleading zero. Hiding the money affects only
+the menu bar; the popover always shows the balance.
+
+### Balance alerts
+
+An optional local notification when the remaining balance falls below a
+dollar threshold the user sets.
+
+The alert fires **on a crossing, not on a state**: only when the previous fetched
+balance was at or above the threshold and the new one is below it. A balance that
+is already below the threshold at launch does not alert, because nothing was
+crossed. This matters because the app refetches every ten minutes by default —
+an alert on state rather than crossing would fire all day.
+
+It also requires the alert to be enabled in settings and the OS notification
+permission to have been granted. If permission is refused the alert simply stays
+quiet and the settings panel reports the state; the app never prompts twice or
+badgers the user about it.
 
 ### Popover layout
 
@@ -208,8 +247,12 @@ One scrolling page, not tabs:
 
 1. Header: balance, a timestamp of when it was fetched, and Refresh.
 2. Tools: one row per detected tool — name, current provider/model, Change….
-3. A collapsed Settings section: API key, refresh interval, launch at login,
-   tool paths.
+3. A collapsed Settings section with:
+   - API key, with Test key
+   - refresh interval
+   - **Menu bar**: show balance checkbox, show icon checkbox
+   - **Alerts**: enable low-balance alert checkbox, threshold amount field
+   - launch at login checkbox
 
 ## Error handling
 
@@ -232,10 +275,20 @@ One scrolling page, not tabs:
      survives byte-for-byte.
   Plain `assert` statements. No XCTest, which is not available in the CLT
   toolchain.
+- The two behaviours that cannot be observed programmatically are factored into
+  pure functions so they *can* be checked: the menu bar presentation rule
+  (including the both-toggles-off case, which must still render something
+  clickable) and the low-balance crossing rule (which must not fire on a state,
+  only on a crossing).
 - `scripts/build-app.sh` must produce a launchable `.app`.
-- Manual smoke test: launch, confirm the menu bar shows the real balance, and
-  confirm a model change is reflected in the target tool's file and in that
-  tool.
+- Manual smoke test: launch, confirm the menu bar shows the real balance, toggle
+  each menu bar checkbox and confirm the item re-renders, and confirm a model
+  change is reflected in the target tool's file and in that tool.
+- **Not verifiable here:** whether a notification banner actually appears. Screen
+  Recording permission is not granted to the terminal, and notification display
+  cannot be asserted from a test. The delivery call is therefore manual-only
+  verification, and the decision logic it depends on is covered by the pure
+  function above.
 
 ## Risks
 
@@ -255,6 +308,12 @@ One scrolling page, not tabs:
 5. **hermes has no CLI on the reference machine**, so its adapter is
    file-edit-only, and it has no model key today. YAML handling is limited to a
    top-level scalar `model:`.
+6. **Notifications on an ad-hoc-signed, non-notarized app.** A local notification
+   needs a bundle identifier and a granted permission, both of which the app has
+   or can request, but an unnotarized app can be silently suppressed by the
+   system and the failure is invisible from inside the process. The alert is
+   opt-in and degrades to silence, and the settings panel reports the permission
+   state so a user can see that it is blocked rather than guessing.
 
 ## Future work
 
