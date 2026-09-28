@@ -64,6 +64,144 @@ enum Tools {
             }
         )
     }
+
+    static func clawdbot(_ paths: ToolPaths) -> ToolAdapter {
+        // Resolve once, at construction. Every invocation routes through this
+        // absolute path: a Finder-launched app gets a minimal PATH, so a bare
+        // `clawdbot` launch would fail confusingly instead of degrading to a
+        // read-only row.
+        let binary = resolveClawdbotBinary(
+            preferred: paths.clawdbotBin,
+            candidates: clawdbotBinaryCandidates())
+        return ToolAdapter(
+            id: "clawdbot",
+            displayName: "clawdbot",
+            detect: { detectClawdbot(paths) },
+            currentModel: { try currentClawdbotModel(paths) },
+            providers: { try clawdbotProviders(binary: binary) },
+            models: { provider in try clawdbotModels(binary: binary, provider: provider) },
+            setModel: { ref in
+                // clawdbot.json is JSON5, so the CLI's own `models set` is the
+                // only safe write path. Back up the pre-write bytes first; the
+                // adapter must never parse and re-serialize the file itself.
+                guard let binary else {
+                    throw ConfigError.write(paths.clawdbotConfig,
+                                            "clawdbot binary not found; row is read-only")
+                }
+                _ = try ConfigFile.backup(paths.clawdbotConfig)
+                let result = try runClawdbot(binary, ["models", "set", ref.qualified])
+                guard result.status == 0 else {
+                    throw ConfigError.write(paths.clawdbotConfig,
+                                            "clawdbot models set exited \(result.status)")
+                }
+            }
+        )
+    }
+
+    /// `preferred` when it is executable, otherwise the first executable entry
+    /// of `candidates`, otherwise nil. Pure, so the Finder-launch resolution is
+    /// testable without launching anything.
+    static func resolveClawdbotBinary(preferred: String, candidates: [String]) -> String? {
+        let fm = FileManager.default
+        if fm.isExecutableFile(atPath: preferred) { return preferred }
+        for candidate in candidates where fm.isExecutableFile(atPath: candidate) {
+            return candidate
+        }
+        return nil
+    }
+}
+
+// MARK: - clawdbot
+
+/// Standard install locations, then the process PATH as a last resort. A
+/// Finder-launched app has `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so the absolute
+/// entries are what make the CLI findable in the shipped app.
+private func clawdbotBinaryCandidates() -> [String] {
+    var candidates = [
+        "/usr/local/bin/clawdbot",
+        "/opt/homebrew/bin/clawdbot",
+        "\(NSHomeDirectory())/.local/bin/clawdbot",
+    ]
+    if isExecutableOnPath("clawdbot") {
+        candidates += (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map { "\($0)/clawdbot" }
+    }
+    return candidates
+}
+
+/// The state directory is the primary signal, matching the other adapters'
+/// file-first detection; a resolvable binary is the fallback.
+private func detectClawdbot(_ paths: ToolPaths) -> Bool {
+    FileManager.default.fileExists(atPath: paths.clawdbotDir)
+        || isExecutableOnPath("clawdbot")
+}
+
+/// `agents.defaults.model` is either a `provider/model` string or an object
+/// whose `primary` holds one; both forms appear in the wild.
+private func currentClawdbotModel(_ paths: ToolPaths) throws -> ToolModelRef? {
+    guard let config = try jsonObject(paths.clawdbotConfig),
+          let agents = config["agents"] as? [String: Any],
+          let defaults = agents["defaults"] as? [String: Any],
+          let model = defaults["model"] else { return nil }
+    if let raw = model as? String { return ToolModelRef.parse(raw) }
+    if let object = model as? [String: Any], let primary = object["primary"] as? String {
+        return ToolModelRef.parse(primary)
+    }
+    return nil
+}
+
+/// The provider names implied by the CLI's model keys, so the dropdown only
+/// offers providers clawdbot actually has configured.
+private func clawdbotProviders(binary: String?) throws -> [String] {
+    var providers = Set<String>()
+    for entry in try clawdbotModelEntries(binary: binary) {
+        guard let key = entry["key"] as? String,
+              let ref = ToolModelRef.parse(key) else { continue }
+        providers.insert(ref.provider)
+    }
+    return providers.sorted()
+}
+
+private func clawdbotModels(binary: String?, provider: String) throws -> [(id: String, name: String)] {
+    try clawdbotModelEntries(binary: binary).compactMap { entry in
+        guard let key = entry["key"] as? String,
+              ToolModelRef.parse(key)?.provider == provider else { return nil }
+        return (id: key, name: entry["name"] as? String ?? key)
+    }
+}
+
+/// Runs `clawdbot models list --json` and returns the parsed entries. stdout
+/// only: the real CLI writes certificate warnings to stderr, and a noisy stderr
+/// must not fail a read. A missing binary yields no entries rather than a crash.
+private func clawdbotModelEntries(binary: String?) throws -> [[String: Any]] {
+    guard let binary else { return [] }
+    let result = try runClawdbot(binary, ["models", "list", "--json"])
+    guard let data = result.stdout.data(using: .utf8),
+          let raw = try? JSONSerialization.jsonObject(with: data),
+          let object = raw as? [String: Any],
+          let models = object["models"] as? [[String: Any]] else { return [] }
+    return models
+}
+
+/// Launches the resolved clawdbot binary. stderr goes to the null device so a
+/// warning cannot fill a pipe or fail a read. Throws only when the binary
+/// cannot be launched at all; a non-zero exit is returned to the caller.
+private func runClawdbot(_ binary: String, _ arguments: [String]) throws -> (stdout: String, status: Int32) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: binary)
+    process.arguments = arguments
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+        try process.run()
+    } catch {
+        throw ConfigError.write(binary, "could not launch clawdbot: \(error)")
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return (String(data: data, encoding: .utf8) ?? "", process.terminationStatus)
 }
 
 // MARK: - opencode

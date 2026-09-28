@@ -25,6 +25,7 @@ enum SelfTest {
         checkPiAdapter()
         checkOpencodeAdapter()
         checkHermesAdapter()
+        checkClawdbotAdapter()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -272,6 +273,74 @@ enum SelfTest {
             check("hermes lists no models for an unconfigured provider", otherModels.isEmpty)
         } catch {
             check("hermes adapter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the clawdbot adapter against a staged temp copy of
+    /// Tests/fixtures. Never touches a real user path: the stub is staged into
+    /// a temp dir and the log is a temp path. Throwing calls are hoisted out of
+    /// `check`'s non-throwing autoclosure.
+    private static func checkClawdbotAdapter() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+            let cb = Tools.clawdbot(cfg)
+
+            check("clawdbot detects from its state dir", cb.detect())
+
+            let initial = try cb.currentModel()
+            check("clawdbot reads primary from the object form",
+                  initial == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+
+            let listed = try cb.models("anthropic")
+            check("clawdbot model list parses the CLI json",
+                  listed.contains { $0.id == "anthropic/claude-opus-4-5" && $0.name == "Claude Opus 4.5 (latest)" })
+
+            let providers = try cb.providers()
+            check("clawdbot providers come from the CLI model keys",
+                  providers == ["anthropic"])
+
+            // A model stored as a plain string, not an object, must still read.
+            let root = (cfg.clawdbotConfig as NSString).deletingLastPathComponent
+            let stringForm = root + "/clawdbot-string.json"
+            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": \"openai/gpt-4o\"\n    }\n  }\n}\n"
+                .write(toFile: stringForm, atomically: true, encoding: .utf8)
+            var stringCfg = cfg
+            stringCfg.clawdbotConfig = stringForm
+            let stringModel = try Tools.clawdbot(stringCfg).currentModel()
+            check("clawdbot reads the string form",
+                  stringModel == ToolModelRef(provider: "openai", model: "gpt-4o"))
+
+            let logPath = root + "/clawdbot-set.log"
+            setenv("CLAWDBOT_STUB_LOG", logPath, 1)
+            let cbBefore = try ConfigFile.read(cfg.clawdbotConfig)
+            try cb.setModel(ToolModelRef(provider: "openrouter", model: "acme/opus-1"))
+            let after = try ConfigFile.read(cfg.clawdbotConfig)
+            check("clawdbot delegated the write to its CLI",
+                  after.contains("openrouter/acme/opus-1"))
+            check("clawdbot preserved fallbacks", after.contains("\"fallbacks\""))
+            let fallbacksBefore = cbBefore.split(separator: "\n").first { $0.contains("\"fallbacks\"") }
+            let fallbacksAfter = after.split(separator: "\n").first { $0.contains("\"fallbacks\"") }
+            check("clawdbot preserved the fallbacks line byte-for-byte",
+                  fallbacksBefore != nil && fallbacksBefore == fallbacksAfter)
+            check("clawdbot created a backup",
+                  FileManager.default.fileExists(atPath: cfg.clawdbotConfig + ".bak"))
+            let log = (try? ConfigFile.read(logPath)) ?? ""
+            check("clawdbot logged the CLI invocation",
+                  log.contains("openrouter/acme/opus-1"))
+
+            // An app launched from Finder gets a minimal PATH, so absolute
+            // candidates must be searched. Each branch can fail.
+            let stub = cfg.clawdbotBin
+            check("clawdbot binary resolves from the preferred path when executable",
+                  Tools.resolveClawdbotBinary(preferred: stub, candidates: ["/nonexistent/a"]) == stub)
+            check("clawdbot binary falls back to a candidate list",
+                  Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot",
+                                              candidates: ["/nonexistent/a", stub]) == stub)
+            check("clawdbot binary returns nil when nothing is executable",
+                  Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot",
+                                              candidates: ["/nonexistent/a"]) == nil)
+        } catch {
+            check("clawdbot adapter checks could not run: \(error)", false)
         }
     }
 
