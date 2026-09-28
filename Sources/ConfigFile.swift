@@ -98,7 +98,15 @@ enum ConfigFile {
         // nested `provider.omlx.model` is matching the document's top-level
         // indentation exactly, never a deeper indent. Do not loosen this to a
         // bare substring match.
-        let indent = topLevelIndent(in: original) ?? ""
+        let detectedIndent = topLevelIndent(in: original)
+        // Minified JSON (or otherwise unindented) has no line-start key to key
+        // off. Matching nothing and inserting would leave a duplicate key, so
+        // fail loudly instead. The carve-out matters: an empty `{}` has no keys
+        // to duplicate and must still take the insert path.
+        if detectedIndent == nil && containsKeyText(original) {
+            throw ConfigError.malformed(path, "no top-level indentation to key off (minified JSON is not supported)")
+        }
+        let indent = detectedIndent ?? ""
         let pattern = "(?m)^\(NSRegularExpression.escapedPattern(for: indent))\"\(NSRegularExpression.escapedPattern(for: key))\"[ \\t]*:[ \\t]*\"([^\"]*)\""
         let regex = try compile(pattern, path: path)
         let full = NSRange(original.startIndex..., in: original)
@@ -144,6 +152,14 @@ enum ConfigFile {
         try backup(path)
         try atomicWrite(updated, to: path)
         return updated
+    }
+
+    /// True when the document contains a JSON string token before its final
+    /// closing brace, i.e. it has keys even though no line-start key established
+    /// a top-level indent. Distinguishes minified-from-empty for the carve-out.
+    private static func containsKeyText(_ text: String) -> Bool {
+        guard let closing = text.lastIndex(of: "}") else { return false }
+        return text[..<closing].contains("\"")
     }
 
     /// The indentation shared by the document's top-level keys. In a

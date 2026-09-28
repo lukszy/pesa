@@ -66,6 +66,24 @@ enum SelfTest {
             check("the top-level key took the new value", nestedAfter.contains("\"model\": \"top/three\""))
             check("the nested model key is untouched", nestedAfter.contains("\"model\": \"nested/two\""))
 
+            // Minified JSON has no line-start key to key off. It must fail as
+            // malformed rather than be rewritten with a duplicate key.
+            let minified = (cfg.piSettings as NSString).deletingLastPathComponent + "/minified.json"
+            let minifiedBytes = "{\"model\":\"x\"}"
+            try minifiedBytes.write(toFile: minified, atomically: true, encoding: .utf8)
+            check("a minified JSON document is rejected, not duplicated",
+                (try? ConfigFile.setJSONString("model", to: "a/b", in: minified)) == nil)
+            let minifiedAfter = try ConfigFile.read(minified)
+            check("a rejected minified write left the file byte-identical", minifiedAfter == minifiedBytes)
+
+            // An empty object has no keys to duplicate and must still insert.
+            let emptyObject = (cfg.piSettings as NSString).deletingLastPathComponent + "/empty.json"
+            try "{}".write(toFile: emptyObject, atomically: true, encoding: .utf8)
+            let emptyResult = try? ConfigFile.setJSONString("model", to: "a/b", in: emptyObject)
+            let emptyAfter = try ConfigFile.read(emptyObject)
+            check("an empty JSON object still takes the insert path",
+                emptyResult != nil && emptyAfter.contains("\"model\": \"a/b\""))
+
             // The hermes fixture has no top-level model: line, so this is the live
             // absent-key insertion path for YAML.
             _ = try ConfigFile.setYAMLScalar("model", to: "openrouter/deepseek/deepseek-v4.1-flash", in: cfg.hermesConfig)
