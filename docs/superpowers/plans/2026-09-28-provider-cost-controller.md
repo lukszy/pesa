@@ -152,6 +152,66 @@ git commit -m "test: assert-based self-test harness and injectable tool paths"
 - Create: `Sources/ConfigFile.swift`, `Tests/fixtures/pi-settings.json`, `Tests/fixtures/opencode.json`, `Tests/fixtures/hermes-config.yaml`, `Tests/fixtures/clawdbot.json`
 - Modify: `Sources/SelfTest.swift`
 
+**Fixture contents — binding.** Tasks 4, 5, 6, and 7 assert against these exact values, so the fixtures this task creates must match them. They are small on purpose; do not add extra keys beyond what is shown, except where a comment says to.
+
+`Tests/fixtures/pi-settings.json` — must keep `defaultThinkingLevel`, because Task 4 asserts the rest of the file survived a write:
+
+```json
+{
+  "theme": "dark",
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4.1-flash",
+  "defaultThinkingLevel": "medium"
+}
+```
+
+`Tests/fixtures/opencode.json` — the model value is the real local one, and it carries a `provider` block so Task 5's provider union has something in it:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omlx": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "oMLX",
+      "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "not-a-real-key" },
+      "models": { "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit": { "name": "Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit" } }
+    },
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio",
+      "options": { "baseURL": "http://127.0.0.1:1234/v1" }
+    }
+  },
+  "model": "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"
+}
+```
+
+`Tests/fixtures/hermes-config.yaml` — Task 6 asserts `orca-status` survives the edit. This one must have a top-level `model:` line **absent**, because Task 6 asserts hermes reports `unset` before the write:
+
+```yaml
+plugins:
+  enabled:
+    - orca-status
+```
+
+`Tests/fixtures/clawdbot.json` — the object form with `fallbacks`, which Review Focus #2 requires Task 7 to preserve:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "anthropic/claude-opus-4-5",
+        "fallbacks": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"]
+      }
+    }
+  }
+}
+```
+
+Fixtures must contain no real credentials. Use obvious placeholders such as `not-a-real-key`.
+
 **Interfaces:**
 - Produces: `enum ConfigFile` with `read(_ path: String) throws -> String`, `backup(_ path: String) throws`, `atomicWrite(_ contents: String, to path: String) throws`, `setJSONString(_ key: String, to value: String, in path: String) throws -> String`, `setYAMLScalar(_ key: String, to value: String, in path: String) throws -> String` (each returns the new contents in addition to writing).
 - Produces: `struct ToolModelRef: Equatable` with `provider`, `model`, `var qualified: String` and `static func parse(_ raw: String) -> ToolModelRef?`.
@@ -159,7 +219,7 @@ git commit -m "test: assert-based self-test harness and injectable tool paths"
 
 - [ ] **Step 1: Write the failing tests**
 
-In `SelfTest.run()`, using a staged temp copy of `Tests/fixtures/opencode.json`. That fixture must contain `"model": "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"`, a `provider` block containing `omlx` and `lmstudio`, and the string `@ai-sdk/openai-compatible`, so Tasks 3, 5, and 11 all read the same file consistently:
+In `SelfTest.run()`, using a staged temp copy of `Tests/fixtures/opencode.json`. Obtain the staged paths with `ToolPaths().stagedInTempDir(from: "Tests/fixtures")`; the `--selftest` run is invoked from the repository root, so that relative path resolves. That fixture will contain `"model": "omlx/Qwen3.5-27B-Claude-4.6-Opus-Distilled-MLX-4bit"`, a `provider` block containing `omlx` and `lmstudio`, and the string `@ai-sdk/openai-compatible`, so Tasks 3, 5, and 11 all read the same file consistently:
 
 ```swift
 SelfTest.check("parse splits on the first slash only",
