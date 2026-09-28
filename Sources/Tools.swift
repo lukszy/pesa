@@ -65,18 +65,18 @@ enum Tools {
         )
     }
 
-    static func clawdbot(_ paths: ToolPaths) -> ToolAdapter {
+    static func clawdbot(_ paths: ToolPaths, candidates: [String]? = nil) -> ToolAdapter {
         // Resolve once, at construction. Every invocation routes through this
         // absolute path: a Finder-launched app gets a minimal PATH, so a bare
         // `clawdbot` launch would fail confusingly instead of degrading to a
-        // read-only row.
+        // read-only row. An injected list replaces the real search list so the
+        // no-binary file-parse fallback is reachable from a check.
         let binary = resolveClawdbotBinary(
-            preferred: paths.clawdbotBin,
-            candidates: clawdbotBinaryCandidates())
+            candidates: candidates ?? clawdbotBinaryCandidates(paths))
         return ToolAdapter(
             id: "clawdbot",
             displayName: "clawdbot",
-            detect: { detectClawdbot(paths) },
+            detect: { detectClawdbot(paths, binary: binary) },
             currentModel: { try currentClawdbotModel(paths, binary: binary) },
             providers: { try clawdbotProviders(binary: binary) },
             models: { provider in try clawdbotModels(binary: binary, provider: provider) },
@@ -98,12 +98,10 @@ enum Tools {
         )
     }
 
-    /// `preferred` when it is executable, otherwise the first executable entry
-    /// of `candidates`, otherwise nil. Pure, so the Finder-launch resolution is
-    /// testable without launching anything.
-    static func resolveClawdbotBinary(preferred: String, candidates: [String]) -> String? {
+    /// The first executable entry of `candidates`, otherwise nil. Pure, so the
+    /// Finder-launch resolution is testable without launching anything.
+    static func resolveClawdbotBinary(candidates: [String]) -> String? {
         let fm = FileManager.default
-        if fm.isExecutableFile(atPath: preferred) { return preferred }
         for candidate in candidates where fm.isExecutableFile(atPath: candidate) {
             return candidate
         }
@@ -118,9 +116,13 @@ enum Tools {
     static func parseClawdbotModel(_ stdout: String) -> ToolModelRef? {
         let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if let data = trimmed.data(using: .utf8),
-           let raw = try? JSONSerialization.jsonObject(with: data),
-           let object = raw as? [String: Any],
-           let primary = object["primary"] as? String {
+           let raw = try? JSONSerialization.jsonObject(with: data) {
+            // The CLI emits the object form for an object config. An object
+            // without a usable `primary` is unset: falling through to the scalar
+            // branch would build a ref out of JSON punctuation such as
+            // `{"fallbacks": ["openai`. A parsed object never falls through.
+            guard let object = raw as? [String: Any],
+                  let primary = object["primary"] as? String else { return nil }
             return ToolModelRef.parse(primary)
         }
         return ToolModelRef.parse(trimmed)
@@ -129,28 +131,29 @@ enum Tools {
 
 // MARK: - clawdbot
 
-/// Standard install locations, then the process PATH as a last resort. A
+/// The adapter's real search list: the injected `paths.clawdbotBin` first, then
+/// standard install locations, then the process PATH as a last resort. A
 /// Finder-launched app has `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so the absolute
 /// entries are what make the CLI findable in the shipped app.
-private func clawdbotBinaryCandidates() -> [String] {
+private func clawdbotBinaryCandidates(_ paths: ToolPaths) -> [String] {
     var candidates = [
+        paths.clawdbotBin,
         "/usr/local/bin/clawdbot",
         "/opt/homebrew/bin/clawdbot",
         "\(NSHomeDirectory())/.local/bin/clawdbot",
     ]
-    if isExecutableOnPath("clawdbot") {
-        candidates += (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map { "\($0)/clawdbot" }
-    }
+    candidates += (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        .split(separator: ":")
+        .map { "\($0)/clawdbot" }
     return candidates
 }
 
 /// The state directory is the primary signal, matching the other adapters'
-/// file-first detection; a resolvable binary is the fallback.
-private func detectClawdbot(_ paths: ToolPaths) -> Bool {
-    FileManager.default.fileExists(atPath: paths.clawdbotDir)
-        || isExecutableOnPath("clawdbot")
+/// file-first detection; the resolved binary is the fallback. Using the resolved
+/// path — not a PATH-only lookup — makes detection agree with what the adapter
+/// can actually run, including from a Finder launch.
+private func detectClawdbot(_ paths: ToolPaths, binary: String?) -> Bool {
+    FileManager.default.fileExists(atPath: paths.clawdbotDir) || binary != nil
 }
 
 /// Reads `agents.defaults.model`. The CLI is the authoritative reader because

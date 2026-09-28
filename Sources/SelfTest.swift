@@ -345,17 +345,67 @@ enum SelfTest {
             check("clawdbot logged the CLI invocation",
                   log.contains("openrouter/acme/opus-1"))
 
-            // An app launched from Finder gets a minimal PATH, so absolute
-            // candidates must be searched. Each branch can fail.
+            // An app launched from Finder gets a minimal PATH, so the candidate
+            // list must be searched by absolute path. Each branch can fail.
             let stub = cfg.clawdbotBin
-            check("clawdbot binary resolves from the preferred path when executable",
-                  Tools.resolveClawdbotBinary(preferred: stub, candidates: ["/nonexistent/a"]) == stub)
-            check("clawdbot binary falls back to a candidate list",
-                  Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot",
-                                              candidates: ["/nonexistent/a", stub]) == stub)
+            check("clawdbot binary resolves from the first candidate when executable",
+                  Tools.resolveClawdbotBinary(candidates: [stub, "/nonexistent/a"]) == stub)
+            check("clawdbot binary falls back past a non-executable candidate",
+                  Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a", stub]) == stub)
             check("clawdbot binary returns nil when nothing is executable",
-                  Tools.resolveClawdbotBinary(preferred: "/nonexistent/clawdbot",
-                                              candidates: ["/nonexistent/a"]) == nil)
+                  Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a"]) == nil)
+
+            // Detection must agree with the resolved binary, not a PATH-only
+            // lookup: a Finder-launched app finds the CLI by absolute path with
+            // no state directory. Injected candidates keep this off the real
+            // PATH so the negative branch is deterministic.
+            var noDir = cfg
+            noDir.clawdbotDir = root + "/no-such-clawdbot-dir"
+            check("clawdbot detects a resolved binary with no state dir",
+                  Tools.clawdbot(noDir, candidates: [stub]).detect())
+            check("clawdbot reports undetected with no dir and no binary",
+                  !Tools.clawdbot(noDir, candidates: ["/nonexistent/clawdbot"]).detect())
+
+            // The file-parse fallback is the read-only path taken when no CLI
+            // can be launched. Injecting a dead candidate list is the only way
+            // to reach it, because the real list resolves the staged stub. A
+            // dedicated object-form copy keeps this independent of the staged
+            // config that `setModel` rewrote above.
+            let objectFormPath = root + "/clawdbot-object-fallback.json"
+            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": {\n        \"primary\": \"anthropic/claude-opus-4-5\",\n        \"fallbacks\": [\"openai/gpt-4o\"]\n      }\n    }\n  }\n}\n"
+                .write(toFile: objectFormPath, atomically: true, encoding: .utf8)
+            var fallback = cfg
+            fallback.clawdbotConfig = objectFormPath
+            let fileObject = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"])
+                .currentModel()
+            check("with no runnable CLI, the object form is read from the file",
+                  fileObject == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+
+            let stringForm = root + "/clawdbot-string.json"
+            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": \"anthropic/claude-opus-4-5\"\n    }\n  }\n}\n"
+                .write(toFile: stringForm, atomically: true, encoding: .utf8)
+            fallback.clawdbotConfig = stringForm
+            let fileString = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"])
+                .currentModel()
+            check("with no runnable CLI, the string form is read from the file",
+                  fileString == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
+
+            // "if the file parse also fails, report the error rather than hiding
+            // it" — this must throw. `(try? …) == nil` would also pass on a
+            // silent unset, so a flag distinguishes the two.
+            let broken = root + "/clawdbot-broken.json"
+            try "{ not json".write(toFile: broken, atomically: true, encoding: .utf8)
+            fallback.clawdbotConfig = broken
+            var unreadableThrew = false
+            do { _ = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"]).currentModel() }
+            catch { unreadableThrew = true }
+            check("an unreadable config with no runnable CLI reports an error, not unset",
+                  unreadableThrew)
+
+            // An object without a `primary` string must read as unset, not as a
+            // garbage scalar ref assembled from JSON punctuation.
+            check("clawdbot reports unset for an object with no primary",
+                  Tools.parseClawdbotModel("{\"fallbacks\": [\"openai/gpt-4o\"]}") == nil)
         } catch {
             check("clawdbot adapter checks could not run: \(error)", false)
         }
