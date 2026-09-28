@@ -30,11 +30,15 @@ func runProbe() -> Int32 {
     return 0
 }
 
-let app = NSApplication.shared
+// Dispatch before touching NSApplication so --selftest runs in a plain terminal.
+if CommandLine.arguments.contains("--selftest") {
+    exit(SelfTest.run())
+}
 if CommandLine.arguments.contains("--probe") {
     exit(runProbe())
 }
 
+let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 statusItem = makeStatusItem()
 app.run()
