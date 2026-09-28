@@ -29,6 +29,7 @@ enum SelfTest {
         checkRegistry()
         checkKeychain()
         checkOpenRouter()
+        checkSettings()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -591,6 +592,71 @@ enum SelfTest {
             check("a corrupt catalog cache throws rather than reading as empty", corruptThrew)
         } catch {
             check("openrouter checks could not run: \(error)", false)
+        }
+    }
+
+    /// Exercises the settings model and the two pure presentation/alert
+    /// functions against temp paths. Throwing calls are hoisted out of `check`'s
+    /// non-throwing autoclosure. Never touches a real user path: every settings
+    /// write goes to the staged temp root, and `AppConfig.path` is only ever
+    /// compared against, never opened.
+    private static func checkSettings() {
+        do {
+            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
+            let root = (cfg.piSettings as NSString).deletingLastPathComponent
+            let settingsPath = root + "/app-config.json"
+
+            var c = AppConfig.load(from: settingsPath)
+            c.refreshMinutes = 42
+            try c.save(to: settingsPath)
+            check("app settings round-trip",
+                  AppConfig.load(from: settingsPath).refreshMinutes == 42)
+
+            var fields = AppConfig.load(from: settingsPath)
+            fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
+            fields.notifyBelowEnabled = true; fields.notifyBelowAmount = 12.5
+            try fields.save(to: settingsPath)
+            let round = AppConfig.load(from: settingsPath)
+            check("the menu bar and alert fields round-trip",
+                  !round.showMoneyInMenuBar && !round.showIconInMenuBar && round.notifyBelowEnabled && round.notifyBelowAmount == 12.5)
+
+            try "not json".write(toFile: settingsPath, atomically: true, encoding: .utf8)
+            check("a corrupt settings file falls back to defaults",
+                  AppConfig.load(from: settingsPath).refreshMinutes == 10)
+
+            // The forward-compatibility pin: a missing key must cost only its
+            // own default, not reset the keys the file did contain.
+            try "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
+            let older = AppConfig.load(from: settingsPath)
+            check("an older settings file keeps its values and gains the new defaults",
+                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.notifyBelowEnabled)
+
+            let defaults = AppConfig.load(from: root + "/config-that-does-not-exist.json")
+            check("defaults show the money and icon and leave alerts off",
+                  defaults.showMoneyInMenuBar && defaults.showIconInMenuBar && !defaults.notifyBelowEnabled)
+
+            check("the selftest never targets the real settings path", settingsPath != AppConfig.path)
+
+            // The status item must never be left with nothing to render, or it cannot be clicked.
+            check("money and icon both on renders both", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false) == (text: "$17.10", symbol: "dollarsign.circle"))
+            check("money hidden renders the icon alone", MenuBarPresentation.of(showMoney: false, showIcon: true, balance: 17.1, error: false) == (text: nil, symbol: "dollarsign.circle"))
+            check("icon hidden renders the money alone", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false) == (text: "$17.10", symbol: nil))
+            check("both hidden still renders something clickable", { let p = MenuBarPresentation.of(showMoney: false, showIcon: false, balance: 17.1, error: false); return p.text != nil || p.symbol != nil }())
+            check("an error renders the em dash", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true) == (text: "—", symbol: "dollarsign.circle"))
+            check("a balance that was never fetched renders no money text", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
+
+            // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
+            check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))
+            check("no alert when permission was refused", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: true, authorized: false))
+            check("no alert at launch when already below the threshold", !BalanceAlert.shouldNotify(previous: nil, current: 3, threshold: 5, enabled: true, authorized: true))
+            check("no alert when the fetch failed", !BalanceAlert.shouldNotify(previous: 20, current: nil, threshold: 5, enabled: true, authorized: true))
+            check("no alert while already below", !BalanceAlert.shouldNotify(previous: 3, current: 2, threshold: 5, enabled: true, authorized: true))
+            check("no alert when both readings are above", !BalanceAlert.shouldNotify(previous: 20, current: 19, threshold: 5, enabled: true, authorized: true))
+            check("an alert on the crossing itself", BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: true, authorized: true))
+            check("exactly at the threshold is not below it", !BalanceAlert.shouldNotify(previous: 20, current: 5, threshold: 5, enabled: true, authorized: true))
+            check("one cent under the threshold alerts", BalanceAlert.shouldNotify(previous: 20, current: 4.99, threshold: 5, enabled: true, authorized: true))
+        } catch {
+            check("settings checks could not run: \(error)", false)
         }
     }
 
