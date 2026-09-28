@@ -46,6 +46,18 @@ struct ModelDetail: Equatable {
 struct Catalog {
     let models: [(id: String, name: String)]
     let details: [String: ModelDetail]
+
+    /// Whether the details carry any real datum. A catalog whose every entry is
+    /// the all-nil placeholder adds nothing a fetch would not, so it must not
+    /// satisfy the cache short-circuit. This is also the guard that keeps a
+    /// detail-less cache from wiping prices already shown (see `refresh`).
+    var hasModelDetails: Bool {
+        details.values.contains {
+            $0.promptPricePerToken != nil
+                || $0.completionPricePerToken != nil
+                || $0.contextLength != nil
+        }
+    }
 }
 
 enum OpenRouterError: Error {
@@ -111,50 +123,64 @@ enum OpenRouter {
             limitReset: payload["limit_reset"] as? String)
     }
 
-    /// Every entry must carry both `id` and `name`; a partial entry is a schema
-    /// change, not a nameless model.
-    static func parseCatalog(_ data: Data) throws -> [(id: String, name: String)] {
+    /// The `data` array of a `/models` response (or of the cache file's
+    /// equivalent list). Shared by both parsers so the two can never read a
+    /// different set of entries.
+    private static func modelEntries(in data: Data) throws -> [[String: Any]] {
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let root = object as? [String: Any],
               let entries = root["data"] as? [[String: Any]] else {
             throw OpenRouterError.notJSON
         }
-        return try entries.map { entry in
-            guard let id = entry["id"] as? String, let name = entry["name"] as? String else {
-                throw OpenRouterError.missingField("data[].id/name")
-            }
-            return (id: id, name: name)
+        return entries
+    }
+
+    /// One `id`/`name` pair. Every entry must carry both; a partial entry is a
+    /// schema change, not a nameless model.
+    private static func catalogEntry(_ entry: [String: Any]) throws -> (id: String, name: String) {
+        guard let id = entry["id"] as? String, let name = entry["name"] as? String else {
+            throw OpenRouterError.missingField("data[].id/name")
         }
+        return (id: id, name: name)
+    }
+
+    /// One entry's base rates and context window. An entry without an id cannot
+    /// be keyed, so it is a schema change and throws; a missing price or context
+    /// window is a legitimately absent value and parses as `nil`.
+    private static func modelDetailEntry(_ entry: [String: Any]) throws -> (id: String, detail: ModelDetail) {
+        guard let id = entry["id"] as? String else {
+            throw OpenRouterError.missingField("data[].id")
+        }
+        let pricing = entry["pricing"] as? [String: Any]
+        return (id, ModelDetail(
+            promptPricePerToken: price(pricing?["prompt"]),
+            completionPricePerToken: price(pricing?["completion"]),
+            contextLength: entry["context_length"] as? Int))
+    }
+
+    static func parseCatalog(_ data: Data) throws -> [(id: String, name: String)] {
+        try modelEntries(in: data).map(catalogEntry)
     }
 
     /// The per-model details from the same `/models` body `parseCatalog`
-    /// reads, keyed by model id. An entry without an id cannot be keyed, so it
-    /// is a schema change and throws; a missing price or context window is a
-    /// legitimately absent value and parses as `nil`.
+    /// reads, keyed by model id.
     static func parseModelDetails(_ data: Data) throws -> [String: ModelDetail] {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              let root = object as? [String: Any],
-              let entries = root["data"] as? [[String: Any]] else {
-            throw OpenRouterError.notJSON
-        }
         var details: [String: ModelDetail] = [:]
-        for entry in entries {
-            guard let id = entry["id"] as? String else {
-                throw OpenRouterError.missingField("data[].id")
-            }
-            let pricing = entry["pricing"] as? [String: Any]
-            details[id] = ModelDetail(
-                promptPricePerToken: price(pricing?["prompt"]),
-                completionPricePerToken: price(pricing?["completion"]),
-                contextLength: entry["context_length"] as? Int)
+        for entry in try modelEntries(in: data) {
+            let (id, detail) = try modelDetailEntry(entry)
+            details[id] = detail
         }
         return details
     }
 
     /// The API sends prices as decimal strings. A missing, empty or
-    /// non-numeric value is `nil`, never 0: `$0.00` reads as "free".
+    /// non-numeric value is `nil`, never 0: `$0.00` reads as "free". A
+    /// **negative** value is OpenRouter's sentinel for variable or unknown
+    /// pricing (`openrouter/auto` ships `"prompt": "-1"`); it is not a rate,
+    /// and rendering it as money would show `-$1,000,000.00/M`. Zero is
+    /// rejected by neither rule: genuinely free models legitimately price `"0"`.
     private static func price(_ raw: Any?) -> Double? {
-        guard let string = raw as? String, let value = Double(string) else { return nil }
+        guard let string = raw as? String, let value = Double(string), value >= 0 else { return nil }
         return value
     }
 
@@ -177,41 +203,53 @@ enum OpenRouter {
     }
 
     /// Fetches the id/name list and the per-model details in one request, so
-    /// the picker and the price line can never disagree. The 24-hour cache is
-    /// now a fallback rather than a short-circuit: it is served only when the
-    /// fetch fails, so the in-memory details — which are deliberately never
-    /// persisted — are populated on the first successful fetch of every
-    /// launch instead of once per cache lifetime.
+    /// the picker and the price line can never disagree. A fresh cache now
+    /// carries both, so it short-circuits the fetch and restores the 24-hour
+    /// cooldown: the app no longer pulls ~737 KB of `/models` on every refresh.
+    /// A cache written before details were persisted has none, so it does not
+    /// short-circuit — the next successful fetch upgrades it in place.
     static func models() async throws -> Catalog {
+        if let cached = try? loadCachedCatalogWithDetails(), cached.hasModelDetails {
+            return cached
+        }
         do {
             let request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/models")!)
             let (body, response) = try await URLSession.shared.data(for: request)
             try checkStatus(response)
-            let models = try parseCatalog(body)
-            let details = try parseModelDetails(body)
+            let catalog = Catalog(
+                models: try parseCatalog(body),
+                details: try parseModelDetails(body))
             // Best-effort: the contract is to return models, caching is
             // opportunistic. A failed write degrades to refetching next time
             // rather than failing a caller that already holds a good list.
-            try? writeCatalog(models)
-            return Catalog(models: models, details: details)
+            try? writeCatalog(catalog)
+            return catalog
         } catch {
-            // Offline fallback: the last good list beats no picker at all.
-            // Details are not cached, so they stay empty until a fetch
-            // succeeds — which is the documented first-launch behaviour.
-            if let cached = try? loadCachedCatalog() {
-                return Catalog(models: cached, details: [:])
+            // Offline fallback: the last good cache beats no picker at all,
+            // details included when it has them (the all-nil list-only shape
+            // still yields no price line, which is correct for missing data).
+            if let cached = try? loadCachedCatalogWithDetails() {
+                return cached
             }
             throw error
         }
     }
 
-    /// Returns `nil` when the cache file is absent or older than 24 hours, and
-    /// throws when it is present but unreadable or malformed. A corrupt cache
-    /// must not read as an empty catalog.
-    static func loadCachedCatalog(from path: String = OpenRouter.catalogPath) throws
-        -> [(id: String, name: String)]? {
+    /// The full cached catalog: the id/name list and the persisted per-model
+    /// details. `nil` when the file is absent or older than 24 hours; throws
+    /// when it is present but unreadable or malformed, so a corrupt cache never
+    /// reads as an empty catalog.
+    static func loadCachedCatalogWithDetails(from path: String = OpenRouter.catalogPath) throws
+        -> Catalog? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return try parseCachedCatalog(data)
+    }
+
+    /// Decodes a cache body. Pure apart from the freshness clock, so the
+    /// selftest can round-trip `encodeCatalog` through it without a file or a
+    /// network call.
+    static func parseCachedCatalog(_ data: Data) throws -> Catalog? {
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let root = object as? [String: Any],
               let fetchedAtString = root["fetchedAt"] as? String,
@@ -220,20 +258,45 @@ enum OpenRouter {
             throw OpenRouterError.notJSON
         }
         guard Date().timeIntervalSince(fetchedAt) < 24 * 60 * 60 else { return nil }
-        return try entries.map { entry in
-            guard let id = entry["id"] as? String, let name = entry["name"] as? String else {
-                throw OpenRouterError.missingField("models[].id/name")
-            }
-            return (id: id, name: name)
+        let models = try entries.map(catalogEntry)
+        var details: [String: ModelDetail] = [:]
+        for entry in entries {
+            let (id, detail) = try modelDetailEntry(entry)
+            details[id] = detail
         }
+        return Catalog(models: models, details: details)
     }
 
-    private static func writeCatalog(_ models: [(id: String, name: String)]) throws {
+    /// Encodes a catalog in the cache shape. The details ride along as the same
+    /// `pricing`/`context_length` entry fields the live response uses, so one
+    /// set of parsers reads both. Internal so the selftest can round-trip it.
+    static func encodeCatalog(_ catalog: Catalog) throws -> Data {
         let payload: [String: Any] = [
             "fetchedAt": ISO8601DateFormatter().string(from: Date()),
-            "models": models.map { ["id": $0.id, "name": $0.name] },
+            "models": catalog.models.map { model -> [String: Any] in
+                var entry: [String: Any] = ["id": model.id, "name": model.name]
+                if let detail = catalog.details[model.id] {
+                    var pricing: [String: Any] = [:]
+                    if let prompt = detail.promptPricePerToken { pricing["prompt"] = String(prompt) }
+                    if let completion = detail.completionPricePerToken { pricing["completion"] = String(completion) }
+                    if !pricing.isEmpty { entry["pricing"] = pricing }
+                    if let context = detail.contextLength { entry["context_length"] = context }
+                }
+                return entry
+            },
         ]
-        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// Kept as the list-only view for callers that only need the picker. A
+    /// missing or stale file is `nil`; a malformed one throws.
+    static func loadCachedCatalog(from path: String = OpenRouter.catalogPath) throws
+        -> [(id: String, name: String)]? {
+        try loadCachedCatalogWithDetails(from: path)?.models
+    }
+
+    private static func writeCatalog(_ catalog: Catalog) throws {
+        let data = try encodeCatalog(catalog)
         let directory = (catalogPath as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try data.write(to: URL(fileURLWithPath: catalogPath), options: .atomic)

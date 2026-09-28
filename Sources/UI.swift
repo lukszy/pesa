@@ -43,7 +43,12 @@ func formatModelDetail(_ detail: ModelDetail) -> String? {
 /// otherwise have to observe by eye is testable. `StatusItemController` renders
 /// the result.
 enum MenuBarPresentation {
-    static func of(showMoney: Bool, showIcon: Bool, balance: Double?, error: Bool)
+    /// `redacted` replaces only the formatted amount with dots; the `—` error
+    /// indicator and the never-fetched `nil` case stay exactly as they are,
+    /// because neither reveals a figure. Defaulted so every existing caller and
+    /// check compiles unchanged, and so the setting off is the default.
+    static func of(showMoney: Bool, showIcon: Bool, balance: Double?, error: Bool,
+                   redacted: Bool = false)
         -> (text: String?, symbol: String?) {
         let text: String?
         if !showMoney {
@@ -51,7 +56,7 @@ enum MenuBarPresentation {
         } else if error {
             text = "—"
         } else if let balance {
-            text = formatBalance(balance)
+            text = redacted ? "$••••" : formatBalance(balance)
         } else {
             // Never fetched: render nothing rather than a $0.00 lie.
             text = nil
@@ -298,7 +303,12 @@ final class AppState: ObservableObject {
 
         if let catalog = try? await OpenRouter.models() {
             CatalogCache.entries = catalog.models
-            CatalogCache.details = catalog.details
+            // A failed fetch falls back to an empty details map; assigning it
+            // would wipe prices that were already shown. Only a catalog that
+            // actually carries a datum replaces the known prices.
+            if catalog.hasModelDetails {
+                CatalogCache.details = catalog.details
+            }
         }
 
         guard let key = Keychain.get(account: Self.keychainAccount), !key.isEmpty else {
@@ -452,6 +462,10 @@ final class AppState: ObservableObject {
             try Keychain.set(key, account: Self.keychainAccount)
             apiKeyInput = ""
             hasKey = true
+            // The previous key's per-key figures belong to a key that is no
+            // longer stored; clear them so the popover cannot attribute them
+            // to the new key until its own fetch lands.
+            keyUsage = nil
             keyStatus = "Key saved to the Keychain."
         } catch {
             keyStatus = "Could not save the key: \(describe(error))"
@@ -478,6 +492,9 @@ final class AppState: ObservableObject {
             try Keychain.delete(account: Self.keychainAccount)
             apiKeyInput = ""
             hasKey = false
+            // `refresh()` returns early with no stored key, so without this the
+            // removed key's usage line would stay on screen indefinitely.
+            keyUsage = nil
             keyStatus = "Key removed."
         } catch {
             keyStatus = "Could not remove the key: \(describe(error))"
@@ -635,6 +652,7 @@ struct PopoverView: View {
             // not from this view.
             Text(balanceText)
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
+                .padding(.vertical, 6)
             // The balance above is account-wide; this line is for the one API
             // key. The help text says so, because with more than one key the
             // two figures do not reconcile.
@@ -676,7 +694,9 @@ struct PopoverView: View {
     }
 
     private func usageLine(_ usage: KeyUsage) -> String {
-        "Today \(formatBalance(usage.usageDaily)) · Month \(formatBalance(usage.usageMonthly))"
+        // "This key" is visible, not just a tooltip: the whole point of the
+        // line is that it must not be read as part of the account-wide balance.
+        "This key: Today \(formatBalance(usage.usageDaily)) · Month \(formatBalance(usage.usageMonthly))"
     }
 
     private func limitLabel(_ progress: (remaining: Double, total: Double), reset: String?) -> String {
@@ -918,6 +938,7 @@ struct SettingsView: View {
             Text("Menu bar").font(.headline)
             Toggle("Show balance", isOn: $state.config.showMoneyInMenuBar)
             Toggle("Show icon", isOn: $state.config.showIconInMenuBar)
+            Toggle("Hide the amount behind dots until hovered", isOn: $state.config.hidesAmountInMenuBar)
             Text("The icon stays visible if both are cleared, so the menu bar item remains clickable.")
                 .font(.caption).foregroundStyle(.secondary)
         }

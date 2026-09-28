@@ -618,6 +618,45 @@ enum SelfTest {
             var corruptThrew = false
             do { _ = try OpenRouter.loadCachedCatalog(from: cachePath) } catch { corruptThrew = true }
             check("a corrupt catalog cache throws rather than reading as empty", corruptThrew)
+
+            // Item 3: the cache now persists the per-model details, so a fresh
+            // cache serves the list and the prices without a fetch. Round-trip
+            // through the same encoder/decoder the file path uses, with no file
+            // and no network.
+            let roundTrip = Catalog(
+                models: [(id: "a/b", name: "A"), (id: "c/d", name: "C")],
+                details: [
+                    "a/b": ModelDetail(
+                        promptPricePerToken: 0.000003,
+                        completionPricePerToken: 0.000015,
+                        contextLength: 200000),
+                    "c/d": ModelDetail(
+                        promptPricePerToken: nil,
+                        completionPricePerToken: nil,
+                        contextLength: nil),
+                ])
+            let roundTripped = try OpenRouter.parseCachedCatalog(
+                OpenRouter.encodeCatalog(roundTrip))
+            check("a cache round-trip carries the model list",
+                  roundTripped?.models.count == 2
+                      && roundTripped?.models[0].id == "a/b"
+                      && roundTripped?.models[1].name == "C")
+            check("a cache round-trip carries the model details",
+                  roundTripped?.details["a/b"] == ModelDetail(
+                      promptPricePerToken: 0.000003,
+                      completionPricePerToken: 0.000015,
+                      contextLength: 200000))
+            // The short-circuit gate in `models()` is `hasModelDetails`. A
+            // round-tripped cache with real prices must open it …
+            check("a cache carrying detail data serves without a fetch",
+                  roundTripped?.hasModelDetails == true)
+            // … and a list-only cache (the pre-details shape) must not, so an
+            // upgrade still fetches once and rewrites the file.
+            let listOnlyData = Data(
+                #"{"fetchedAt":"\#(ISO8601DateFormatter().string(from: Date()))","models":[{"id":"a/b","name":"A"}]}"#.utf8)
+            let listOnly = try OpenRouter.parseCachedCatalog(listOnlyData)
+            check("a list-only cache still fetches so its details are upgraded",
+                  listOnly != nil && !listOnly!.hasModelDetails)
         } catch {
             check("openrouter checks could not run: \(error)", false)
         }
@@ -691,6 +730,23 @@ enum SelfTest {
                       && details["free/model"]?.contextLength == nil)
             check("a non-JSON models response is an error, not a crash",
                   (try? OpenRouter.parseModelDetails(Data("<html>".utf8))) == nil)
+
+            // OpenRouter's negative sentinel for variable/unknown pricing. Six
+            // real models ship `"prompt": "-1"`, including `openrouter/auto`.
+            // Without `value >= 0` in `price`, `openrouter/auto` renders
+            // `-$1,000,000.00/M`.
+            let sentinel = try OpenRouter.parseModelDetails(Data(
+                #"{"data":[{"id":"openrouter/auto","pricing":{"prompt":"-1","completion":"-1"},"context_length":2000000}]}"#.utf8))
+            check("a negative sentinel price is nil, not negative money",
+                  sentinel["openrouter/auto"]?.promptPricePerToken == nil
+                      && sentinel["openrouter/auto"]?.completionPricePerToken == nil)
+            // The other side of the same guard: a genuinely free model prices
+            // `"0"`, which must stay valid. `value > 0` would reject it.
+            let zero = try OpenRouter.parseModelDetails(Data(
+                #"{"data":[{"id":"free/model","pricing":{"prompt":"0","completion":"0"}}]}"#.utf8))
+            check("a zero price is still valid, not rejected",
+                  zero["free/model"]?.promptPricePerToken == 0
+                      && zero["free/model"]?.completionPricePerToken == 0)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }
@@ -715,11 +771,12 @@ enum SelfTest {
 
             var fields = AppConfig.load(from: settingsPath)
             fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
+            fields.hidesAmountInMenuBar = true
             fields.notifyBelowEnabled = true; fields.notifyBelowAmount = 12.5
             try fields.save(to: settingsPath)
             let round = AppConfig.load(from: settingsPath)
             check("the menu bar and alert fields round-trip",
-                  !round.showMoneyInMenuBar && !round.showIconInMenuBar && round.notifyBelowEnabled && round.notifyBelowAmount == 12.5)
+                  !round.showMoneyInMenuBar && !round.showIconInMenuBar && round.hidesAmountInMenuBar && round.notifyBelowEnabled && round.notifyBelowAmount == 12.5)
 
             try "not json".write(toFile: settingsPath, atomically: true, encoding: .utf8)
             check("a corrupt settings file falls back to defaults",
@@ -730,7 +787,7 @@ enum SelfTest {
             try "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
             let older = AppConfig.load(from: settingsPath)
             check("an older settings file keeps its values and gains the new defaults",
-                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.notifyBelowEnabled
+                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
                       && older.hiddenTools.isEmpty && older.binaryPathOverrides.isEmpty && !older.launchAtLogin && older.notifyBelowAmount == 5.0)
 
             // A present-but-mistyped value must cost only its own field: without
@@ -760,6 +817,8 @@ enum SelfTest {
             var menuToggle = base; menuToggle.showMoneyInMenuBar = false
             check("a menu-bar toggle does not rebuild rows",
                   !ConfigChange.affectsRows(from: base, to: menuToggle))
+            check("the hide-amount setting defaults off",
+                  !AppConfig().hidesAmountInMenuBar && !defaults.hidesAmountInMenuBar)
             var login = base; login.launchAtLogin = true
             check("a launch-at-login change does not rebuild rows",
                   !ConfigChange.affectsRows(from: base, to: login))
@@ -779,6 +838,14 @@ enum SelfTest {
             check("a balance that was never fetched renders no money text", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
             check("money shown, icon hidden and no balance yet still renders the icon", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
             check("money shown, icon hidden and an error still renders the money", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: true) == (text: "—", symbol: nil))
+
+            // Redaction replaces only the amount. The check flips if
+            // `redacted` is dropped from the amount branch, or if it is also
+            // applied to the em dash.
+            check("a redacted amount renders as dots", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false, redacted: true) == (text: "$••••", symbol: "dollarsign.circle"))
+            check("an unredacted amount renders the real figure", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false, redacted: false) == (text: "$17.10", symbol: "dollarsign.circle"))
+            check("an error still shows the em dash while redacted", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true, redacted: true) == (text: "—", symbol: "dollarsign.circle"))
+            check("a redacted amount with the icon hidden still renders the dots", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false, redacted: true) == (text: "$••••", symbol: nil))
 
             // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
             check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))

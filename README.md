@@ -18,10 +18,11 @@ only while the popover is open and only to read or write clawdbot's config.)
   balance that has never been fetched shows `—` in the same large style rather
   than a `$0.00` lie.
 - **Per-key usage** — directly under the balance, a compact line such as
-  `Today $5.45 · Month $92.17`, from OpenRouter's `GET /api/v1/key`. This is
-  **usage for the stored API key**, whereas the balance above it is
+  `This key: Today $5.45 · Month $92.17`, from OpenRouter's `GET /api/v1/key`.
+  This is **usage for the stored API key**, whereas the balance above it is
   **account-wide**; with more than one key the two figures do not reconcile, so
-  the line's tooltip says which is which. When the key has a spend cap
+  the line says **This key** on its face and its tooltip says which figure is
+  which. When the key has a spend cap
   configured, a thin progress bar shows the remaining share of that cap with
   its reset period (`limit_reset`). A key with no cap (`limit` and
   `limit_remaining` null) shows no bar at all, and a failed `/key` call hides
@@ -37,10 +38,15 @@ only while the popover is open and only to read or write clawdbot's config.)
   from `pricing.prompt`/`pricing.completion`; the same response carries tiered
   `overrides` (for example, one model costs double above 200k prompt tokens),
   which this app does not present. A missing or unparseable price is omitted
-  rather than shown as `$0.00`. The details are parsed from the same `/models`
-  response as the model list but kept **in memory only** — they are not written
-  to the 24-hour cache file, so for the few seconds between launch and the
-  first successful fetch the editor shows no price line.
+  rather than shown as `$0.00`. A negative `pricing` value is OpenRouter's
+  sentinel for variable/unknown pricing (six live models, including
+  `openrouter/auto`, ship `"prompt": "-1"`); it is rejected to `nil` rather
+  than rendered as negative money, while a genuine free model's `"0"` stays
+  valid. The details are parsed from the same `/models` response as the model
+  list and **persisted in the 24-hour cache file** alongside it, so a fresh
+  cache serves both the picker and the price line without a network fetch. That
+  restores the cache short-circuit: `/models` is no longer pulled on every
+  refresh.
 - **Agents load asynchronously** — the popover appears immediately and shows
   **Checking agents…** while detection runs, instead of waiting on clawdbot's
   CLI, which can take seconds.
@@ -167,6 +173,7 @@ Settings live in
 - hidden tools
 - per-tool binary path overrides (only clawdbot runs a binary)
 - whether the menu bar shows the balance and whether it shows the icon
+- whether the menu bar amount is hidden behind dots until hovered
 - whether the low-balance alert is enabled, and its threshold
 
 The file is plain JSON and contains no secrets.
@@ -175,7 +182,8 @@ The settings UI is a standard macOS **Settings** window, opened from
 **Settings…** in the app menu (⌘,) or **Settings…** in the status item's
 right-click menu. There is no gear control in the popover header, so settings
 are reachable only from those two menus. The popover itself holds only the
-centred balance header, the refresh icon, and the detected-agent tiles.
+centred balance header, the refresh icon, the per-key usage line and its limit
+bar, and the detected-agent tiles.
 Right-clicking the menu bar icon opens a small menu with **Settings…**, **Buy
 credits…** (opens OpenRouter's credits page in the default browser), and
 **Quit**; left-clicking still toggles the popover.
@@ -201,6 +209,13 @@ money-shown/icon-hidden before the first successful fetch, when there is no
 balance text yet. A status item with nothing to render would have nothing to
 click and the app would become impossible to open or quit. Hiding the balance
 affects only the menu bar; the popover always shows it.
+
+The **Hide the amount behind dots until hovered** setting replaces the formatted
+amount with `$••••` (the `—` error indicator and the never-fetched case are
+unchanged, since neither reveals a figure). Hovering the status item reveals the
+real figure and leaving re-hides it, via an `NSTrackingArea` on the status
+button; the title is re-rendered on both the hover change and any settings
+change. This is dots, not a blur: an `NSStatusItem` title is plain text.
 
 ### Low-balance alert
 

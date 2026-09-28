@@ -13,6 +13,7 @@ struct AppConfig: Codable {
     var binaryPathOverrides: [String: String] = [:]
     var showMoneyInMenuBar: Bool = true
     var showIconInMenuBar: Bool = true
+    var hidesAmountInMenuBar: Bool = false
     var notifyBelowEnabled: Bool = false
     var notifyBelowAmount: Double = 5.0
 
@@ -37,6 +38,7 @@ struct AppConfig: Codable {
         binaryPathOverrides = (try? c.decodeIfPresent([String: String].self, forKey: .binaryPathOverrides)) ?? [:]
         showMoneyInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar)) ?? true
         showIconInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar)) ?? true
+        hidesAmountInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .hidesAmountInMenuBar)) ?? false
         notifyBelowEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .notifyBelowEnabled)) ?? false
         notifyBelowAmount = (try? c.decodeIfPresent(Double.self, forKey: .notifyBelowAmount)) ?? 5.0
     }

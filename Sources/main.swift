@@ -34,16 +34,35 @@ func runProbe() -> Int32 {
 
 /// Renders the status item from whatever `MenuBarPresentation` decides, so the
 /// never-both-nil invariant and the em-dash fallback have exactly one owner.
+/// Also the tracking-area owner for hover: the status button has no hover
+/// callback of its own, so entering and leaving reveal and re-hide the amount.
 @MainActor
-final class StatusItemController {
+final class StatusItemController: NSObject {
     let item: NSStatusItem
     private var cancellables = Set<AnyCancellable>()
+    /// Kept so a hover change can re-render without waiting for the next state
+    /// emission: the title must flip the moment the pointer enters or leaves.
+    private var latestRemaining: Double?
+    private var latestError = false
+    private var latestConfig = AppConfig()
+    private var isHovering = false
 
     init(state: AppState, target: AnyObject, action: Selector) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
         item.button?.target = target
         item.button?.action = action
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        // `.inVisibleRect` tracks the button's current bounds; `.activeAlways`
+        // keeps hover working while the app is not frontmost.
+        if let button = item.button {
+            button.addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self,
+                userInfo: nil))
+        }
 
         state.$remaining
             .combineLatest(state.$errorText, state.$config)
@@ -54,12 +73,29 @@ final class StatusItemController {
             .store(in: &cancellables)
     }
 
+    @objc private func mouseEntered(_ event: NSEvent) {
+        isHovering = true
+        render(remaining: latestRemaining, error: latestError, config: latestConfig)
+    }
+
+    @objc private func mouseExited(_ event: NSEvent) {
+        isHovering = false
+        render(remaining: latestRemaining, error: latestError, config: latestConfig)
+    }
+
     private func render(remaining: Double?, error: Bool, config: AppConfig) {
+        latestRemaining = remaining
+        latestError = error
+        latestConfig = config
+        // The caller owns the hover subtraction, so `MenuBarPresentation` stays
+        // pure. A settings change re-enters here through the Combine sink and
+        // picks up the current `isHovering` immediately.
         let presentation = MenuBarPresentation.of(
             showMoney: config.showMoneyInMenuBar,
             showIcon: config.showIconInMenuBar,
             balance: remaining,
-            error: error)
+            error: error,
+            redacted: config.hidesAmountInMenuBar && !isHovering)
         item.button?.title = presentation.text.map { " \($0)" } ?? ""
         item.button?.image = presentation.symbol.flatMap {
             NSImage(systemSymbolName: $0, accessibilityDescription: "Provider Cost Controller")
