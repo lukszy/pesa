@@ -1370,7 +1370,12 @@ struct SettingsView: View {
                     Text("File (~/.pesa-app/settings.json)").tag(KeyStorage.file)
                     Text("Keychain").tag(KeyStorage.keychain)
                 }
-                SecureField("OpenRouter API key", text: $state.apiKeyInput)
+                // Full-width on its own line, with a placeholder: a bare
+                // `SecureField` in a grouped `Form` puts its label on the left
+                // and shares the row, which pushes the field narrow.
+                SecureField("Paste your OpenRouter API key", text: $state.apiKeyInput)
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Save") { state.saveKey() }
                         .disabled(state.apiKeyInput.isEmpty)
