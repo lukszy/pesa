@@ -964,7 +964,9 @@ struct ModelEditorView: View {
             }
         }
         .padding(16)
-        .frame(width: 560)
+        // Fill the harness window rather than sitting at a fixed 560, so the
+        // provider table uses whatever width the user gives the window.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Provider selection
@@ -1110,6 +1112,7 @@ struct ModelEditorView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// A missing price is an em dash, never `$0.00`.
@@ -1202,7 +1205,7 @@ enum HarnessWindow {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false)
@@ -1210,7 +1213,7 @@ enum HarnessWindow {
         // Resizable so a taller editor is not clipped. The default is above the
         // floor so the editor's optional model-detail and read-only lines fit on
         // first open; this is the minimum the user can resize down to.
-        window.contentMinSize = NSSize(width: 560, height: 300)
+        window.contentMinSize = NSSize(width: 620, height: 300)
         window.center()
         return window
     }
