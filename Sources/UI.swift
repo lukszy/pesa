@@ -69,6 +69,38 @@ func formatHarnessModel(_ state: ToolState) -> String {
     return "unset"
 }
 
+/// The per-key usage line: today, this week, this month, all from `/key`.
+func formatKeyUsageLine(_ usage: KeyUsage) -> String {
+    "This key: Today \(formatBalance(usage.usageDaily)) · Week \(formatBalance(usage.usageWeekly)) · Month \(formatBalance(usage.usageMonthly))"
+}
+
+/// The account-wide spend line from `/credits`: spent of purchased credits, and
+/// the share. `nil` when the account purchased no credits, where the share is
+/// undefined.
+func formatAccountSpendLine(_ credits: Credits) -> String? {
+    guard credits.totalCredits > 0 else { return nil }
+    let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
+    return "Account: spent \(formatBalance(credits.totalUsage)) of \(formatBalance(credits.totalCredits)) · \(percent)%"
+}
+
+/// Extra per-key facts joined into one subdued line: free tier, BYOK spend,
+/// free-model quota, and expiry. `nil` when there is nothing to say. `now` is a
+/// parameter so the expiry rule is checkable without a clock.
+func formatKeyBadges(_ usage: KeyUsage, now: Date) -> String? {
+    var parts: [String] = []
+    if usage.isFreeTier == true { parts.append("free tier") }
+    if let byok = usage.byokUsage, byok > 0 { parts.append("BYOK \(formatBalance(byok))") }
+    if let quota = usage.freeModelQuota {
+        parts.append("free models \(quota.used)/\(quota.limit) today")
+    }
+    if let expires = usage.expiresAt {
+        let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
+        if days < 0 { parts.append("key expired") }
+        else if days <= 30 { parts.append("expires in \(days)d") }
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
 /// The harness window's one-line model summary, e.g.
 /// `1M context · $3.00/M in · $15.00/M out`. Each part is omitted when its
 /// datum is missing, and `nil` means there is nothing to show at all. These
@@ -254,6 +286,10 @@ final class AppState: ObservableObject {
     @MainActor static let shared = AppState()
 
     @Published var remaining: Double?
+    /// The last successful `/credits` result, so the popover can show spend of
+    /// purchased credits as well as the remaining balance. Kept on a failed
+    /// fetch, exactly like `remaining`.
+    @Published var accountCredits: Credits?
     /// Per-key usage from `/api/v1/key`, or nil when it is unavailable. Read
     /// only by the popover's usage line; a failed `/key` must not fail the
     /// refresh or blank the account-wide balance above it.
@@ -449,6 +485,7 @@ final class AppState: ObservableObject {
             }
             previousBalance = balance
             remaining = balance
+            accountCredits = credits
             lastUpdated = Date()
             errorText = nil
         } catch {
@@ -864,19 +901,32 @@ struct PopoverView: View {
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
                 .padding(.top, 12)
                 .padding(.bottom, 12)
-            // The balance above is account-wide; this line is for the one API
-            // key. The help text says so, because with more than one key the
-            // two figures do not reconcile.
-            if let usage = state.keyUsage {
-                Text(usageLine(usage))
+            // Account-wide counterpart to the balance: the balance is what is
+            // left, this is what was spent of what was purchased.
+            if let credits = state.accountCredits,
+               let accountLine = formatAccountSpendLine(credits) {
+                Text(accountLine)
                     .font(.caption).foregroundStyle(.secondary)
-                    .help("Usage for this API key. The balance above is account-wide.")
+                    .help("Account-wide: total spent of credits purchased. The balance above is what remains.")
+            }
+            // The lines below are for the one API key, not the account. The help
+            // text says so, because with more than one key the two figures do
+            // not reconcile.
+            if let usage = state.keyUsage {
+                Text(formatKeyUsageLine(usage))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Usage for this API key, not the account. The balance above is account-wide.")
                 if let progress = usage.limitProgress {
                     ProgressView(value: progress.remaining, total: progress.total)
                         .progressViewStyle(.linear)
                         .frame(maxWidth: 220)
                     Text(limitLabel(progress, reset: usage.limitReset))
                         .font(.caption2).foregroundStyle(.secondary)
+                }
+                if let badges = formatKeyBadges(usage, now: Date()) {
+                    Text(badges)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .help("Key tier, own-key (BYOK) spend, free-model quota and expiry.")
                 }
             }
             if let updated = state.lastUpdated {
@@ -902,12 +952,6 @@ struct PopoverView: View {
     private var balanceText: String {
         guard let remaining = state.remaining else { return "—" }
         return formatBalance(remaining)
-    }
-
-    private func usageLine(_ usage: KeyUsage) -> String {
-        // "This key" is visible, not just a tooltip: the whole point of the
-        // line is that it must not be read as part of the account-wide balance.
-        "This key: Today \(formatBalance(usage.usageDaily)) · Month \(formatBalance(usage.usageMonthly))"
     }
 
     private func limitLabel(_ progress: (remaining: Double, total: Double), reset: String?) -> String {

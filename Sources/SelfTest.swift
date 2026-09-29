@@ -585,6 +585,25 @@ enum SelfTest {
                   (try? OpenRouter.parseKeyUsage(Data(#"{"data":{"usage_daily":1,"usage_weekly":1}}"#.utf8))) == nil)
             check("a non-JSON key response is an error, not a crash",
                   (try? OpenRouter.parseKeyUsage(Data("<html>401</html>".utf8))) == nil)
+
+            // The newer optional fields: present values parse, and an absent one
+            // is nil (omitted), never 0.
+            let rich = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":2,"usage_monthly":3,"usage":99.5,"byok_usage":7.25,"is_free_tier":true,"label":"sk-or-v1-ab...cd","expires_at":"2027-12-31T23:59:59Z","free_model_daily_requests":{"used":12,"limit":50,"remaining":38}}}"#.utf8))
+            check("key usage parses the optional fields",
+                  rich.usageTotal == 99.5 && rich.byokUsage == 7.25
+                      && rich.isFreeTier == true && rich.label == "sk-or-v1-ab...cd"
+                      && rich.freeModelQuota == FreeModelQuota(used: 12, limit: 50, remaining: 38))
+            check("expires_at parses to a date", rich.expiresAt != nil)
+            let bare = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":1,"usage_monthly":1}}"#.utf8))
+            check("absent optional key fields are nil, not zero",
+                  bare.usageTotal == nil && bare.byokUsage == nil && bare.isFreeTier == nil
+                      && bare.freeModelQuota == nil && bare.label == nil && bare.expiresAt == nil)
+            let halfQuota = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":1,"usage_monthly":1,"free_model_daily_requests":{"used":1}}}"#.utf8))
+            check("a half-reported free-model quota is treated as absent",
+                  halfQuota.freeModelQuota == nil)
         } catch {
             check("key usage checks could not run: \(error)", false)
         }
@@ -606,6 +625,34 @@ enum SelfTest {
                               limit: 100, limitRemaining: 80, limitReset: "monthly")
         check("a real cap yields its remaining/total pair",
               capped.limitProgress?.remaining == 80 && capped.limitProgress?.total == 100)
+
+        // The popover's stat lines.
+        check("the usage line shows today, week and month",
+              formatKeyUsageLine(KeyUsage(usageDaily: 1.5, usageWeekly: 10.25, usageMonthly: 92.17))
+                  == "This key: Today $1.50 · Week $10.25 · Month $92.17")
+        check("the account spend line shows spent, purchased and the share",
+              formatAccountSpendLine(Credits(totalCredits: 100, totalUsage: 25.5))
+                  == "Account: spent $25.50 of $100.00 · 26%")
+        check("an account with no purchased credits has no spend line",
+              formatAccountSpendLine(Credits(totalCredits: 0, totalUsage: 5)) == nil)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = 86_400.0
+        var badges = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1)
+        check("no extra key facts means no badge line", formatKeyBadges(badges, now: now) == nil)
+        badges.isFreeTier = true
+        badges.byokUsage = 3.5
+        badges.freeModelQuota = FreeModelQuota(used: 12, limit: 50, remaining: 38)
+        badges.expiresAt = now.addingTimeInterval(10 * day)
+        check("badges join tier, BYOK, free-model quota and expiry",
+              formatKeyBadges(badges, now: now)
+                  == "free tier · BYOK $3.50 · free models 12/50 today · expires in 10d")
+        badges.expiresAt = now.addingTimeInterval(-day)
+        check("an expired key says so",
+              formatKeyBadges(badges, now: now)?.contains("key expired") == true)
+        badges.expiresAt = now.addingTimeInterval(200 * day)
+        check("a key expiring far out shows no expiry badge",
+              formatKeyBadges(badges, now: now)?.contains("expires") == false)
 
         do {
             let details = try OpenRouter.parseModelDetails(Data(

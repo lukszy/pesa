@@ -16,17 +16,27 @@ and no third-party dependencies.
   bar shows `—` and the popover keeps the last known balance with its age; a
   balance that has never been fetched shows `—` in the same large style rather
   than a `$0.00` lie.
-- **Per-key usage** — directly under the balance, a compact line such as
-  `This key: Today $5.45 · Month $92.17`, from OpenRouter's `GET /api/v1/key`.
-  This is **usage for the stored API key**, whereas the balance above it is
-  **account-wide**; with more than one key the two figures do not reconcile, so
-  the line says **This key** on its face and its tooltip says which figure is
-  which. When the key has a spend cap
-  configured, a thin progress bar shows the remaining share of that cap with
-  its reset period (`limit_reset`). A key with no cap (`limit` and
-  `limit_remaining` null) shows no bar at all, and a failed `/key` call hides
-  the whole line rather than failing the refresh or blanking the balance. A
-  missing usage field is treated as an error, never as `$0.00`.
+- **Account spend** — directly under the balance, `Account: spent $25.50 of
+  $100.00 · 26%`, from the same `GET /api/v1/credits` call (spend of credits
+  purchased). Omitted when the account has purchased no credits, where the share
+  is undefined.
+- **Per-key usage** — a compact line such as
+  `This key: Today $5.45 · Week $30.10 · Month $92.17`, from OpenRouter's
+  `GET /api/v1/key`. This is **usage for the stored API key**, whereas the
+  balance and the line above it are **account-wide**; with more than one key the
+  figures do not reconcile, so the line says **This key** on its face and its
+  tooltip says which figure is which. When the key has a spend cap configured, a
+  thin progress bar shows the remaining share of that cap with its reset period
+  (`limit_reset`). A key with no cap (`limit` and `limit_remaining` null) shows
+  no bar at all, and a failed `/key` call hides the whole line rather than
+  failing the refresh or blanking the balance. A missing usage field is treated
+  as an error, never as `$0.00`.
+- **Key badges** — a subdued line under the usage, shown only when there is
+  something to say: `free tier`, own-provider-key spend (`BYOK $3.50`), the
+  free-model daily quota (`free models 12/50 today`, from
+  `free_model_daily_requests`), and an expiry warning inside 30 days
+  (`expires in 10d`, from `expires_at`). These come from the same `/key`
+  response and are omitted, never shown as 0.
 - **Opt-in popover** — the popover shows only the harnesses the user added in
   Settings (`addedHarnesses`); detection still finds every installed harness so
   Settings can offer them, but nothing auto-populates the grid. Each harness row
