@@ -6,6 +6,10 @@ import Foundation
 struct ToolAdapter {
     let id: String
     let displayName: String
+    /// SF Symbol name for this harness. It travels on the adapter so the
+    /// popover tile, the Settings row, and the harness window share one source
+    /// instead of each mapping an id to a symbol.
+    let symbol: String
     let detect: () -> Bool
     let currentModel: () throws -> ToolModelRef?
     let providers: () throws -> [String]
@@ -77,13 +81,13 @@ enum Tools {
 
     /// Every adapter, in the order the UI presents them.
     static func all(_ paths: ToolPaths) -> [ToolAdapter] {
-        [pi(paths), opencode(paths), hermes(paths), clawdbot(paths)]
+        [pi(paths), opencode(paths), hermes(paths)]
     }
 
-    /// The registry's filter, split out from `all` so it is testable. pi,
-    /// opencode and clawdbot each fall back to `PATH`, so for those a check
-    /// relying on a staged tool being absent cannot fail on a machine where the
-    /// tool is installed; hermes has no such fallback and is the absence case.
+    /// The registry's filter, split out from `all` so it is testable. pi and
+    /// opencode each fall back to `PATH`, so for those a check relying on a
+    /// staged tool being absent cannot fail on a machine where the tool is
+    /// installed; hermes has no such fallback and is the absence case.
     static func detected(_ adapters: [ToolAdapter]) -> [ToolAdapter] {
         adapters.filter { $0.detect() }
     }
@@ -97,6 +101,7 @@ enum Tools {
         ToolAdapter(
             id: "pi",
             displayName: "pi",
+            symbol: "circle.hexagongrid",
             detect: { detectPi(paths) },
             currentModel: { try currentPiModel(paths) },
             providers: { try piProviders(paths) },
@@ -115,6 +120,7 @@ enum Tools {
         ToolAdapter(
             id: "hermes",
             displayName: "hermes",
+            symbol: "paperplane",
             detect: { detectHermes(paths) },
             currentModel: { try currentHermesModel(paths) },
             providers: { try hermesProviders(paths) },
@@ -131,6 +137,7 @@ enum Tools {
         ToolAdapter(
             id: "opencode",
             displayName: "opencode",
+            symbol: "chevron.left.forwardslash.chevron.right",
             detect: { detectOpencode(paths) },
             currentModel: { try currentOpencodeModel(paths) },
             providers: { try opencodeProviders(paths) },
@@ -143,202 +150,6 @@ enum Tools {
         )
     }
 
-    static func clawdbot(_ paths: ToolPaths, candidates: [String]? = nil) -> ToolAdapter {
-        // Resolve once, at construction. Every invocation routes through this
-        // absolute path: a Finder-launched app gets a minimal PATH, so a bare
-        // `clawdbot` launch would fail confusingly instead of degrading to a
-        // read-only row. An injected list replaces the real search list so the
-        // no-binary file-parse fallback is reachable from a check.
-        let binary = resolveClawdbotBinary(
-            candidates: candidates ?? clawdbotBinaryCandidates(paths))
-        return ToolAdapter(
-            id: "clawdbot",
-            displayName: "clawdbot",
-            detect: { detectClawdbot(paths, binary: binary) },
-            currentModel: { try currentClawdbotModel(paths, binary: binary) },
-            providers: { try clawdbotProviders(binary: binary) },
-            models: { provider in CatalogCache.withCatalog(try clawdbotModels(binary: binary, provider: provider), provider: provider) },
-            setModel: { ref in
-                // clawdbot.json is JSON5, so the CLI's own `models set` is the
-                // only safe write path. Back up the pre-write bytes first; the
-                // adapter must never parse and re-serialize the file itself.
-                guard let binary else {
-                    throw ConfigError.write(paths.clawdbotConfig,
-                                            "clawdbot binary not found; row is read-only")
-                }
-                _ = try ConfigFile.backup(paths.clawdbotConfig)
-                let result = try runClawdbot(binary, ["models", "set", ref.qualified])
-                guard result.status == 0 else {
-                    throw ConfigError.write(paths.clawdbotConfig,
-                                            "clawdbot models set exited \(result.status)")
-                }
-            }
-        )
-    }
-
-    /// Whether the adapter's write path is available. Only clawdbot needs an
-    /// external binary; without one its row is read-only, because its config is
-    /// JSON5 and only the CLI may write it.
-    static func canWrite(_ adapter: ToolAdapter, paths: ToolPaths) -> Bool {
-        guard adapter.id == "clawdbot" else { return true }
-        return resolveClawdbotBinary(candidates: clawdbotBinaryCandidates(paths)) != nil
-    }
-
-    /// The first executable entry of `candidates`, otherwise nil. Pure, so the
-    /// Finder-launch resolution is testable without launching anything.
-    static func resolveClawdbotBinary(candidates: [String]) -> String? {
-        let fm = FileManager.default
-        for candidate in candidates where fm.isExecutableFile(atPath: candidate) {
-            return candidate
-        }
-        return nil
-    }
-
-    /// Turns `clawdbot config get agents.defaults.model` stdout into a ref. The
-    /// CLI emits the object form for an object config, the bare `provider/model`
-    /// scalar for a string config, and a human-readable "not found" message (or
-    /// nothing) when the key is unset. Anything unparseable is `nil`, not a
-    /// throw — reading a config must not fail on the CLI's prose.
-    static func parseClawdbotModel(_ stdout: String) -> ToolModelRef? {
-        let trimmed = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let data = trimmed.data(using: .utf8),
-           let raw = try? JSONSerialization.jsonObject(with: data) {
-            // The CLI emits the object form for an object config. An object
-            // without a usable `primary` is unset: falling through to the scalar
-            // branch would build a ref out of JSON punctuation such as
-            // `{"fallbacks": ["openai`. A parsed object never falls through.
-            guard let object = raw as? [String: Any],
-                  let primary = object["primary"] as? String else { return nil }
-            return ToolModelRef.parse(primary)
-        }
-        return ToolModelRef.parse(trimmed)
-    }
-}
-
-// MARK: - clawdbot
-
-/// The adapter's real search list: the injected `paths.clawdbotBin` first, then
-/// standard install locations, then the process PATH as a last resort. A
-/// Finder-launched app has `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so the absolute
-/// entries are what make the CLI findable in the shipped app.
-private func clawdbotBinaryCandidates(_ paths: ToolPaths) -> [String] {
-    var candidates = [
-        paths.clawdbotBin,
-        "/usr/local/bin/clawdbot",
-        "/opt/homebrew/bin/clawdbot",
-        "\(NSHomeDirectory())/.local/bin/clawdbot",
-    ]
-    candidates += (ProcessInfo.processInfo.environment["PATH"] ?? "")
-        .split(separator: ":")
-        .map { "\($0)/clawdbot" }
-    return candidates
-}
-
-/// The state directory is the primary signal, matching the other adapters'
-/// file-first detection; the resolved binary is the fallback. Using the resolved
-/// path — not a PATH-only lookup — makes detection agree with what the adapter
-/// can actually run, including from a Finder launch.
-private func detectClawdbot(_ paths: ToolPaths, binary: String?) -> Bool {
-    FileManager.default.fileExists(atPath: paths.clawdbotDir) || binary != nil
-}
-
-/// Reads `agents.defaults.model`. The CLI is the authoritative reader because
-/// `clawdbot.json` is JSON5: `JSONSerialization` throws on a commented file, so
-/// a direct file parse must never be what the user sees. The file parse is a
-/// fallback only for when the binary is unresolvable, where a comment-free
-/// config still reads; if it also fails, the error surfaces rather than hides.
-private func currentClawdbotModel(_ paths: ToolPaths, binary: String?) throws -> ToolModelRef? {
-    if let binary {
-        let result = try runClawdbot(binary, ["config", "get", "agents.defaults.model"])
-        return Tools.parseClawdbotModel(result.stdout)
-    }
-    guard let config = try jsonObject(paths.clawdbotConfig),
-          let agents = config["agents"] as? [String: Any],
-          let defaults = agents["defaults"] as? [String: Any],
-          let model = defaults["model"] else { return nil }
-    if let raw = model as? String { return ToolModelRef.parse(raw) }
-    if let object = model as? [String: Any], let primary = object["primary"] as? String {
-        return ToolModelRef.parse(primary)
-    }
-    return nil
-}
-
-/// The provider names implied by the CLI's model keys, so the dropdown only
-/// offers providers clawdbot actually has configured.
-private func clawdbotProviders(binary: String?) throws -> [String] {
-    var providers = Set<String>()
-    for entry in try clawdbotModelEntries(binary: binary) {
-        guard let key = entry["key"] as? String,
-              let ref = ToolModelRef.parse(key) else { continue }
-        providers.insert(ref.provider)
-    }
-    return providers.sorted()
-}
-
-private func clawdbotModels(binary: String?, provider: String) throws -> [(id: String, name: String)] {
-    try clawdbotModelEntries(binary: binary).compactMap { entry in
-        guard let key = entry["key"] as? String,
-              ToolModelRef.parse(key)?.provider == provider else { return nil }
-        return (id: key, name: entry["name"] as? String ?? key)
-    }
-}
-
-/// Runs `clawdbot models list --json` and returns the parsed entries. stdout
-/// only: the real CLI writes certificate warnings to stderr, and a noisy stderr
-/// must not fail a read. A missing binary yields no entries rather than a crash.
-private func clawdbotModelEntries(binary: String?) throws -> [[String: Any]] {
-    guard let binary else { return [] }
-    let result = try runClawdbot(binary, ["models", "list", "--json"])
-    guard let data = result.stdout.data(using: .utf8),
-          let raw = try? JSONSerialization.jsonObject(with: data),
-          let object = raw as? [String: Any],
-          let models = object["models"] as? [[String: Any]] else { return [] }
-    return models
-}
-
-/// Launches the resolved clawdbot binary. stderr goes to the null device so a
-/// warning cannot fill a pipe or fail a read. Throws when the binary cannot be
-/// launched at all, or when it outlives `timeout`; a non-zero exit is returned
-/// to the caller.
-///
-/// The read and the wait both happen off the caller's thread. The CLI is reached
-/// from the config `didSet`, so a hung process on the main thread would freeze
-/// the UI; a wall-clock deadline turns that hang into a reported error.
-private func runClawdbot(_ binary: String, _ arguments: [String],
-                         timeout: TimeInterval = 5) throws -> (stdout: String, status: Int32) {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: binary)
-    process.arguments = arguments
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-    do {
-        try process.run()
-    } catch {
-        throw ConfigError.write(binary, "could not launch clawdbot: \(error)")
-    }
-
-    let finished = DispatchSemaphore(value: 0)
-    var stdout = Data()
-    var status: Int32 = 0
-    DispatchQueue.global(qos: .utility).async {
-        // Reading to EOF blocks until the child exits, so the deadline cannot
-        // be enforced by `waitUntilExit` alone; both run here and the caller
-        // terminates the process on the deadline.
-        stdout = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        status = process.terminationStatus
-        finished.signal()
-    }
-    guard finished.wait(timeout: .now() + timeout) == .success else {
-        process.terminate()
-        if finished.wait(timeout: .now() + 2) == .timedOut {
-            kill(process.processIdentifier, SIGKILL)
-            _ = finished.wait(timeout: .now() + 2)
-        }
-        throw ConfigError.write(binary, "clawdbot did not finish within \(Int(timeout))s; terminated")
-    }
-    return (String(data: stdout, encoding: .utf8) ?? "", status)
 }
 
 // MARK: - opencode
@@ -479,8 +290,8 @@ private func detectPi(_ paths: ToolPaths) -> Bool {
 }
 
 /// Whether `name` resolves to an executable on the current `PATH`. Shared by
-/// `detectPi` and `detectOpencode`; `detectClawdbot` uses its resolved binary
-/// and `detectHermes` is file existence only. Callers put file existence first
+/// `detectPi` and `detectOpencode`; `detectHermes` is file existence only.
+/// Callers put file existence first
 /// because a Finder-launched app gets a minimal `PATH`, so this lookup alone can
 /// miss an installed tool whose config exists.
 private func isExecutableOnPath(_ name: String) -> Bool {

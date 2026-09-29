@@ -1,38 +1,106 @@
 import AppKit
 import SwiftUI
 
-/// Opens SwiftUI's `Settings` scene from AppKit code. A `Settings` scene only
-/// exists inside an `App`, and `showSettingsWindow:` neither exists on `NSApp`
-/// nor creates a window. The reliable path is to send the app menu's own
-/// `Settings…` item's action to its own target, then bring the resulting window
-/// forward: it opens visible but not key.
+/// The app's Settings window.
+///
+/// Apple's `Settings` scene is deliberately **not resizable** (its minimize and
+/// maximize are dimmed and it sizes itself to its content), so it cannot give
+/// the resizable sidebar + detail window this app needs. The scene is therefore
+/// only used to keep a valid `App` and its `⌘,` menu slot; the real window is an
+/// `NSWindow` created and owned here, which is why resizing works.
+///
+/// `open()` is called from the status item's `Settings…` item, the popover tile,
+/// and the app menu command.
 @MainActor
 enum SettingsWindow {
-    static func open() {
-        guard let appMenu = NSApp.mainMenu?.items.first?.submenu,
-              let item = appMenu.items.first(where: { $0.title.hasPrefix("Settings") }),
-              let action = item.action
-        else { return }
+    private static var window: NSWindow?
+    /// `NSToolbar` holds its delegate weakly, so this keeps it alive.
+    private static let toolbarDelegate = SettingsToolbarDelegate()
 
-        // SwiftUI keeps one Settings window; re-sending its action brings an
-        // already-open one forward rather than creating a second.
-        _ = NSApp.sendAction(action, to: item.target, from: item)
-        DispatchQueue.main.async {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first { $0.title.hasSuffix(" Settings") }?.makeKeyAndOrderFront(nil)
-        }
+    static func open() {
+        let window = self.window ?? makeWindow()
+        self.window = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private static func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
+            // No `.miniaturizable`: the Settings scene convention is a quick task
+            // that is not minimized. `.resizable` is the point of owning the
+            // window rather than using the scene.
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(width: 720, height: 520)
+        window.title = "Pesa Settings"
+        window.contentViewController = NSHostingController(
+            rootView: SettingsView(state: AppState.shared))
+        let toolbar = NSToolbar(identifier: "PesaSettingsToolbar")
+        toolbar.delegate = toolbarDelegate
+        toolbar.displayMode = .iconOnly
+        window.toolbar = toolbar
+        // Unified so the item sits in the title bar itself, next to the title,
+        // rather than in an expanded strip below it.
+        window.toolbarStyle = .unified
+        window.center()
+        return window
     }
 }
 
-/// The SwiftUI entry point. `AppDelegate` still owns the status item and
-/// popover; this only contributes the `Settings` scene (which also installs the
-/// app menu's About/Settings…/Services/Hide/Quit items, so ⌘, works).
+/// The Settings window's title-bar toolbar: one button that shows or hides the
+/// sidebar. It flips the shared `AppState.showSidebar`, so the SwiftUI content
+/// and the toolbar always agree.
+@MainActor
+final class SettingsToolbarDelegate: NSObject, NSToolbarDelegate {
+    private static let toggleSidebar = NSToolbarItem.Identifier("toggleSidebar")
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.toggleSidebar]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.toggleSidebar]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard itemIdentifier == Self.toggleSidebar else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        item.label = "Sidebar"
+        item.paletteLabel = "Sidebar"
+        item.toolTip = "Show or hide the sidebar"
+        item.image = NSImage(systemSymbolName: "sidebar.left",
+                             accessibilityDescription: "Toggle sidebar")
+        // A navigational item is laid out in the leading area, immediately
+        // before the title, instead of the trailing side a plain item gets.
+        item.isNavigational = true
+        item.target = self
+        item.action = #selector(toggleSidebarAction)
+        return item
+    }
+
+    @objc private func toggleSidebarAction() {
+        AppState.shared.showSidebar.toggle()
+    }
+}
+
+/// The SwiftUI entry point. `AppDelegate` owns the status item and popover; the
+/// `Settings` scene here keeps a valid `App` (and installs the standard app
+/// menu) while its `.appSettings` command is replaced with one that opens the
+/// resizable window above. The scene's own window is never shown.
 struct AppMain: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        Settings {
-            SettingsView(state: AppState.shared)
-        }
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { SettingsWindow.open() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+            }
     }
 }

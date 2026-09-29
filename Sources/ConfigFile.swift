@@ -62,7 +62,7 @@ enum ConfigFile {
     static func atomicWrite(_ contents: String, to path: String) throws {
         let directory = (path as NSString).deletingLastPathComponent
         let dir = directory.isEmpty ? FileManager.default.currentDirectoryPath : directory
-        let temp = "\(dir)/.ProviderCostController-\(UUID().uuidString).tmp"
+        let temp = "\(dir)/.Pesa-\(UUID().uuidString).tmp"
         // rename replaces the inode, so a fresh temp file would reset the
         // target's mode to the default (~0644). Configs can hold API keys;
         // preserve whatever mode the user had rather than loosening it. Neither

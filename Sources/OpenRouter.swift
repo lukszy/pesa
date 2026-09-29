@@ -40,6 +40,41 @@ struct ModelDetail: Equatable {
     let contextLength: Int?
 }
 
+/// One upstream provider serving a model, from
+/// `GET /models/{author}/{slug}/endpoints` joined with the ZDR and provider
+/// lists. Every price/speed/context field is optional because the API omits it
+/// for some endpoints; a missing datum must render as omitted, never as zero.
+/// `providerSlug` is the API `tag` (the key the ZDR list and `/providers` use).
+struct EndpointInfo: Equatable {
+    let providerSlug: String
+    let providerName: String
+    let promptPricePerToken: Double?
+    let completionPricePerToken: Double?
+    let throughputP50: Double?
+    let latencyP50: Double?
+    let contextLength: Int?
+    let quantization: String?
+    let zdr: Bool
+    let privacyPolicyURL: String?
+    let termsOfServiceURL: String?
+}
+
+/// `Identifiable` and the sort keys the editor's SwiftUI `Table` needs. A
+/// `TableColumn` sorts through a `KeyPathComparator` on a `Comparable` value,
+/// and `Optional` is not `Comparable`, so a missing numeric datum maps to the
+/// largest finite value: ascending puts it last, which is the same "missing is
+/// not zero" rule the rest of the app follows.
+extension EndpointInfo: Identifiable {
+    var id: String { providerSlug }
+    var promptOrder: Double { promptPricePerToken ?? .greatestFiniteMagnitude }
+    var completionOrder: Double { completionPricePerToken ?? .greatestFiniteMagnitude }
+    var speedOrder: Double { throughputP50 ?? .greatestFiniteMagnitude }
+    /// ZDR first when ascending: a policy flag, not a missing value.
+    var zdrOrder: Int { zdr ? 0 : 1 }
+    /// Unquantized sorts after a named quantization when ascending.
+    var quantOrder: String { quantization ?? "\u{10FFFF}" }
+}
+
 /// One `/models` response: the id/name list the pickers use and the per-model
 /// details the harness window shows. Both are parsed from a single body, so
 /// the two can never disagree about which models exist.
@@ -73,11 +108,8 @@ enum OpenRouterError: Error {
 /// the pure parser. `loadCachedCatalog` takes its path so the cache rule is
 /// testable without touching the real user cache.
 enum OpenRouter {
-    static let catalogPath: String = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
-        return base.appendingPathComponent("ProviderCostController/models-cache.json").path
-    }()
+    /// `~/.pesa-app/models-cache.json`, alongside the settings file.
+    static let catalogPath: String = "\(AppConfig.directory)/models-cache.json"
 
     /// A missing field must never be read as zero: a missing `total_usage`
     /// treated as 0 would show the whole balance as remaining.
@@ -184,6 +216,154 @@ enum OpenRouter {
     private static func price(_ raw: Any?) -> Double? {
         guard let string = raw as? String, let value = Double(string), value >= 0 else { return nil }
         return value
+    }
+
+    /// A JSON number tolerating the integer/double split `JSONSerialization`
+    /// produces. A missing or non-numeric value is `nil`, never 0.
+    private static func number(_ raw: Any?) -> Double? {
+        if let value = raw as? Double { return value }
+        if let value = raw as? Int { return Double(value) }
+        return nil
+    }
+
+    /// The `p50` inside a `throughput_last_30m` / `latency_last_30m` object.
+    private static func p50(_ raw: Any?) -> Double? {
+        guard let object = raw as? [String: Any] else { return nil }
+        return number(object["p50"])
+    }
+
+    /// One endpoints body's `data.endpoints[]`. `tag` (falling back to the
+    /// lowercased `provider_name`) is the slug the ZDR and provider lists key
+    /// on; the model id comes from the body itself so the ZDR key matches. An
+    /// entry with neither a tag nor a name cannot be keyed and is skipped.
+    static func parseModelEndpoints(_ data: Data, zdrKeys: Set<String>) throws -> [EndpointInfo] {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let root = object as? [String: Any],
+              let payload = root["data"] as? [String: Any],
+              let entries = payload["endpoints"] as? [[String: Any]] else {
+            throw OpenRouterError.notJSON
+        }
+        let modelID = payload["id"] as? String ?? ""
+        return entries.compactMap { entry in
+            let providerName = entry["provider_name"] as? String ?? ""
+            let slug = (entry["tag"] as? String) ?? providerName.lowercased()
+            guard !slug.isEmpty else { return nil }
+            let pricing = entry["pricing"] as? [String: Any]
+            return EndpointInfo(
+                providerSlug: slug,
+                providerName: providerName.isEmpty ? slug : providerName,
+                promptPricePerToken: price(pricing?["prompt"]),
+                completionPricePerToken: price(pricing?["completion"]),
+                throughputP50: p50(entry["throughput_last_30m"]),
+                latencyP50: p50(entry["latency_last_30m"]),
+                contextLength: entry["context_length"] as? Int,
+                quantization: entry["quantization"] as? String,
+                zdr: zdrKeys.contains("\(modelID)|\(slug)"),
+                privacyPolicyURL: entry["privacy_policy_url"] as? String,
+                termsOfServiceURL: entry["terms_of_service_url"] as? String)
+        }
+    }
+
+    /// The `model_id|tag` keys of `GET /endpoints/zdr`. Despite the name, that
+    /// body is the same endpoint-object shape as
+    /// `/models/{author}/{slug}/endpoints`: each entry carries `model_id` and
+    /// the provider `tag` (the slug), not `model`/`provider`. Reading the wrong
+    /// field names would throw on every live call and silently empty the
+    /// provider table, so the key is built from the same two fields
+    /// `parseModelEndpoints` uses.
+    static func parseZDR(_ data: Data) throws -> Set<String> {
+        var keys: Set<String> = []
+        for entry in try modelEntries(in: data) {
+            guard let model = entry["model_id"] as? String,
+                  let provider = entry["tag"] as? String else {
+                throw OpenRouterError.missingField("data[].model_id/tag")
+            }
+            keys.insert("\(model)|\(provider)")
+        }
+        return keys
+    }
+
+    /// `GET /providers`, keyed by `slug`. Both URLs are legitimately null for
+    /// some providers and parse as `nil`, never as an empty string.
+    static func parseProviders(_ data: Data) throws -> [String: (privacy: String?, tos: String?)] {
+        var providers: [String: (privacy: String?, tos: String?)] = [:]
+        for entry in try modelEntries(in: data) {
+            guard let slug = entry["slug"] as? String else {
+                throw OpenRouterError.missingField("data[].slug")
+            }
+            providers[slug] = (
+                privacy: entry["privacy_policy_url"] as? String,
+                tos: entry["terms_of_service_url"] as? String)
+        }
+        return providers
+    }
+
+    /// The `/providers` entry for an endpoint's provider slug. That list keys on
+    /// the base slug (`google-vertex`) while an endpoint's `tag` can carry a
+    /// region or variant suffix (`google-vertex/global`), so a miss falls back
+    /// to the segment before the first `/`. Without it those rows render no
+    /// privacy/ToS links. Pure, so the fallback is pinned by a check.
+    static func providerInfo(forSlug slug: String,
+                             in providers: [String: (privacy: String?, tos: String?)])
+        -> (privacy: String?, tos: String?)? {
+        if let exact = providers[slug] { return exact }
+        return providers[String(slug.prefix(while: { $0 != "/" }))]
+    }
+
+    /// One authenticated GET, status-checked. Shared by the three endpoint
+    /// fetches so they cannot disagree about auth or error handling.
+    private static func get(_ urlString: String, apiKey: String) async throws -> Data {
+        guard let url = URL(string: urlString) else {
+            throw OpenRouterError.missingField("endpoints url")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (body, response) = try await URLSession.shared.data(for: request)
+        try checkStatus(response)
+        return body
+    }
+
+    /// The live per-provider facts for one model. The model id is split on the
+    /// **first** `/` only, so ids that themselves contain a slash
+    /// (`deepseek/deepseek-v4.1-flash`) keep their tail. pi's `~` alias prefix
+    /// is stripped before the request or the path 404s. Endpoints, ZDR and
+    /// providers are fetched together and joined in memory; any failure throws
+    /// so the caller can degrade to the editor's base price line.
+    static func modelEndpoints(modelID: String, apiKey: String) async throws -> [EndpointInfo] {
+        let stripped = modelID.hasPrefix("~") ? String(modelID.dropFirst()) : modelID
+        guard let slash = stripped.firstIndex(of: "/") else {
+            throw OpenRouterError.missingField("model id")
+        }
+        let author = String(stripped[..<slash])
+        let slug = String(stripped[stripped.index(after: slash)...])
+        guard !author.isEmpty, !slug.isEmpty else {
+            throw OpenRouterError.missingField("model id")
+        }
+
+        let endpointsData = try await get(
+            "https://openrouter.ai/api/v1/models/\(author)/\(slug)/endpoints", apiKey: apiKey)
+        let zdrData = try await get(
+            "https://openrouter.ai/api/v1/endpoints/zdr", apiKey: apiKey)
+        let providersData = try await get(
+            "https://openrouter.ai/api/v1/providers", apiKey: apiKey)
+
+        let zdrKeys = try parseZDR(zdrData)
+        let providers = try parseProviders(providersData)
+        return try parseModelEndpoints(endpointsData, zdrKeys: zdrKeys).map { endpoint in
+            let provider = providerInfo(forSlug: endpoint.providerSlug, in: providers)
+            return EndpointInfo(
+                providerSlug: endpoint.providerSlug,
+                providerName: endpoint.providerName,
+                promptPricePerToken: endpoint.promptPricePerToken,
+                completionPricePerToken: endpoint.completionPricePerToken,
+                throughputP50: endpoint.throughputP50,
+                latencyP50: endpoint.latencyP50,
+                contextLength: endpoint.contextLength,
+                quantization: endpoint.quantization,
+                zdr: endpoint.zdr,
+                privacyPolicyURL: provider?.privacy ?? endpoint.privacyPolicyURL,
+                termsOfServiceURL: provider?.tos ?? endpoint.termsOfServiceURL)
+        }
     }
 
     static func credits(apiKey: String) async throws -> Credits {

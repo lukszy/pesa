@@ -20,6 +20,18 @@ KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 # would need authorisation), and codesign still signs with it locally.
 if security find-identity -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
     echo "signing identity already exists: $IDENTITY_NAME (nothing to do)"
+    # Surface the untrusted status, because `security find-identity` prints
+    # CSSMERR_TP_NOT_TRUSTED for a self-signed certificate and it looks like a
+    # failure. It is not: the cert is deliberately not in the trust store, and
+    # codesign still uses it locally, so the signed app's designated requirement
+    # is certificate-based and survives rebuilds.
+    if ! security find-identity -v -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
+        echo "  it is self-signed and not in the trust store (CSSMERR_TP_NOT_TRUSTED);"
+        echo "  that is expected. codesign signs with it and the app's designated"
+        echo "  requirement stays certificate-based, so the app keeps one identity"
+        echo "  across rebuilds."
+    fi
+    echo "  verify with: codesign -d -r- Pesa.app"
     exit 0
 fi
 

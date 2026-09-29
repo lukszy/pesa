@@ -1,21 +1,12 @@
 import Foundation
 import Security
 
-/// Secret storage for the OpenRouter API key. The key lives here and nowhere
-/// else: nothing in this file writes it to a plain file, logs it, or embeds it
-/// in an error.
+/// Secret storage for the OpenRouter API key, used only when the user picks the
+/// Keychain backend (`AppConfig.keyStorage == .keychain`). The default backend is
+/// the plain `~/.pesa-app/settings.json` file. Nothing here writes the key to a
+/// file, logs it, or embeds it in an error.
 enum Keychain {
-    static let service = "provider-cost-controller"
-
-    /// The single "a key is present" rule: a stored value only counts when it
-    /// is non-nil **and** non-empty. `init` used to accept a merely non-nil
-    /// value while `refresh()` also required non-empty, so a stored-but-empty
-    /// key made Settings claim a key existed while the usage line vanished.
-    /// Pure, so it is checked offline against literals.
-    static func isUsableKey(_ key: String?) -> Bool {
-        guard let key else { return false }
-        return !key.isEmpty
-    }
+    static let service = "pesa"
 
     /// Error carrying only the opaque `OSStatus`; never the secret.
     struct Failure: Error {
@@ -62,8 +53,7 @@ enum Keychain {
         }
     }
 
-    /// Removing an already-absent key is a no-op, not an error: a second
-    /// clear-key action must not fail with nothing to remove.
+    /// Removing an already-absent key is a no-op, not an error.
     static func delete(account: String) throws {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {

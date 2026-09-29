@@ -28,12 +28,14 @@ enum SelfTest {
         checkPiAdapter()
         checkOpencodeAdapter()
         checkHermesAdapter()
-        checkClawdbotAdapter()
         checkRegistry()
-        checkKeychain()
         checkUsableKey()
+        checkKeyStorage()
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
+        checkEndpointsAndFormatting()
+        checkProviderSorting()
+        checkSearchablePicker()
         checkSettings()
         checkHarnessTiles()
         let anyFailed = results.contains { !$0.condition }
@@ -289,144 +291,9 @@ enum SelfTest {
         }
     }
 
-    /// Exercises the clawdbot adapter against a staged temp copy of
-    /// Tests/fixtures. Never touches a real user path: the stub is staged into
-    /// a temp dir and the log is a temp path. Throwing calls are hoisted out of
-    /// `check`'s non-throwing autoclosure.
-    @MainActor
-    private static func checkClawdbotAdapter() {
-        do {
-            let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
-            let cb = Tools.clawdbot(cfg)
-
-            check("clawdbot detects from its state dir", cb.detect())
-
-            let initial = try cb.currentModel()
-            check("clawdbot reads primary from the object form",
-                  initial == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-
-            let listed = try cb.models("anthropic")
-            check("clawdbot model list parses the CLI json",
-                  listed.contains { $0.id == "anthropic/claude-opus-4-5" && $0.name == "Claude Opus 4.5 (latest)" })
-
-            let providers = try cb.providers()
-            check("clawdbot providers come from the CLI model keys",
-                  providers == ["anthropic"])
-
-            // The CLI is the JSON5-safe reader. These are verbatim captures of
-            // its stdout; each shape is pinned separately so a parser that only
-            // handled the object form fails the scalar check and vice versa.
-            let objectForm = Tools.parseClawdbotModel(
-                "{\n  \"primary\": \"anthropic/claude-opus-4-5\",\n  \"fallbacks\": [\n    \"openai/gpt-4o\"\n  ]\n}")
-            check("clawdbot parses the object form from CLI stdout",
-                  objectForm == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-            let scalarForm = Tools.parseClawdbotModel("anthropic/claude-opus-4-5")
-            check("clawdbot parses a bare scalar from CLI stdout",
-                  scalarForm == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-            check("clawdbot reports unset for the CLI's not-found message",
-                  Tools.parseClawdbotModel("Config path not found: agents.defaults.model") == nil)
-            check("clawdbot reports unset for empty CLI output",
-                  Tools.parseClawdbotModel("") == nil)
-
-            let root = (cfg.clawdbotConfig as NSString).deletingLastPathComponent
-            // The real config is JSON5, so JSONSerialization throws on a comment.
-            // The CLI must be tried first: this check fails if the file parse
-            // runs first and its throw escapes.
-            let json5Path = root + "/clawdbot-json5.json"
-            try "{ // a comment\n  \"agents\": { \"defaults\": { \"model\": { \"primary\": \"anthropic/claude-opus-4-5\", \"fallbacks\": [\"openai/gpt-4o\"] } } }\n}\n"
-                .write(toFile: json5Path, atomically: true, encoding: .utf8)
-            var json5Paths = cfg
-            json5Paths.clawdbotConfig = json5Path
-            let json5Model = try Tools.clawdbot(json5Paths).currentModel()
-            check("a comment-laden JSON5 config still reads through the CLI",
-                  json5Model == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-
-            let logPath = root + "/clawdbot-set.log"
-            setenv("CLAWDBOT_STUB_LOG", logPath, 1)
-            let cbBefore = try ConfigFile.read(cfg.clawdbotConfig)
-            try cb.setModel(ToolModelRef(provider: "openrouter", model: "acme/opus-1"))
-            let after = try ConfigFile.read(cfg.clawdbotConfig)
-            check("clawdbot delegated the write to its CLI",
-                  after.contains("openrouter/acme/opus-1"))
-            check("clawdbot preserved fallbacks", after.contains("\"fallbacks\""))
-            let fallbacksBefore = cbBefore.split(separator: "\n").first { $0.contains("\"fallbacks\"") }
-            let fallbacksAfter = after.split(separator: "\n").first { $0.contains("\"fallbacks\"") }
-            check("clawdbot preserved the fallbacks line byte-for-byte",
-                  fallbacksBefore != nil && fallbacksBefore == fallbacksAfter)
-            check("clawdbot created a backup",
-                  FileManager.default.fileExists(atPath: cfg.clawdbotConfig + ".bak"))
-            let log = (try? ConfigFile.read(logPath)) ?? ""
-            check("clawdbot logged the CLI invocation",
-                  log.contains("openrouter/acme/opus-1"))
-
-            // An app launched from Finder gets a minimal PATH, so the candidate
-            // list must be searched by absolute path. Each branch can fail.
-            let stub = cfg.clawdbotBin
-            check("clawdbot binary resolves from the first candidate when executable",
-                  Tools.resolveClawdbotBinary(candidates: [stub, "/nonexistent/a"]) == stub)
-            check("clawdbot binary falls back past a non-executable candidate",
-                  Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a", stub]) == stub)
-            check("clawdbot binary returns nil when nothing is executable",
-                  Tools.resolveClawdbotBinary(candidates: ["/nonexistent/a"]) == nil)
-
-            // Detection must agree with the resolved binary, not a PATH-only
-            // lookup: a Finder-launched app finds the CLI by absolute path with
-            // no state directory. Injected candidates keep this off the real
-            // PATH so the negative branch is deterministic.
-            var noDir = cfg
-            noDir.clawdbotDir = root + "/no-such-clawdbot-dir"
-            check("clawdbot detects a resolved binary with no state dir",
-                  Tools.clawdbot(noDir, candidates: [stub]).detect())
-            check("clawdbot reports undetected with no dir and no binary",
-                  !Tools.clawdbot(noDir, candidates: ["/nonexistent/clawdbot"]).detect())
-
-            // The file-parse fallback is the read-only path taken when no CLI
-            // can be launched. Injecting a dead candidate list is the only way
-            // to reach it, because the real list resolves the staged stub. A
-            // dedicated object-form copy keeps this independent of the staged
-            // config that `setModel` rewrote above.
-            let objectFormPath = root + "/clawdbot-object-fallback.json"
-            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": {\n        \"primary\": \"anthropic/claude-opus-4-5\",\n        \"fallbacks\": [\"openai/gpt-4o\"]\n      }\n    }\n  }\n}\n"
-                .write(toFile: objectFormPath, atomically: true, encoding: .utf8)
-            var fallback = cfg
-            fallback.clawdbotConfig = objectFormPath
-            let fileObject = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"])
-                .currentModel()
-            check("with no runnable CLI, the object form is read from the file",
-                  fileObject == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-
-            let stringForm = root + "/clawdbot-string.json"
-            try "{\n  \"agents\": {\n    \"defaults\": {\n      \"model\": \"anthropic/claude-opus-4-5\"\n    }\n  }\n}\n"
-                .write(toFile: stringForm, atomically: true, encoding: .utf8)
-            fallback.clawdbotConfig = stringForm
-            let fileString = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"])
-                .currentModel()
-            check("with no runnable CLI, the string form is read from the file",
-                  fileString == ToolModelRef(provider: "anthropic", model: "claude-opus-4-5"))
-
-            // "if the file parse also fails, report the error rather than hiding
-            // it" — this must throw. `(try? …) == nil` would also pass on a
-            // silent unset, so a flag distinguishes the two.
-            let broken = root + "/clawdbot-broken.json"
-            try "{ not json".write(toFile: broken, atomically: true, encoding: .utf8)
-            fallback.clawdbotConfig = broken
-            var unreadableThrew = false
-            do { _ = try Tools.clawdbot(fallback, candidates: ["/nonexistent/clawdbot"]).currentModel() }
-            catch { unreadableThrew = true }
-            check("an unreadable config with no runnable CLI reports an error, not unset",
-                  unreadableThrew)
-
-            // An object without a `primary` string must read as unset, not as a
-            // garbage scalar ref assembled from JSON punctuation.
-            check("clawdbot reports unset for an object with no primary",
-                  Tools.parseClawdbotModel("{\"fallbacks\": [\"openai/gpt-4o\"]}") == nil)
-        } catch {
-            check("clawdbot adapter checks could not run: \(error)", false)
-        }
-    }
 
     /// Exercises the tool registry and the `missing`/`unset`/`configured`
-    /// mapping. pi, opencode and clawdbot each fall back to `PATH` and are
+    /// mapping. pi and opencode each fall back to `PATH` and are
     /// installed on the reference machine, so for those a staged-absence check
     /// cannot fail; hermes's `detect()` is file-existence only, which makes its
     /// absent-config case machine-independent. The pure filter is tested with
@@ -449,20 +316,28 @@ enum SelfTest {
             check("the production registry still includes a tool whose config is present",
                   Tools.detected(cfg).contains { $0.id == "hermes" })
 
-            // For pi, opencode and clawdbot a staged-absence check cannot work:
+            // For pi and opencode a staged-absence check cannot work:
             // each falls back to `PATH` and is installed here. Hermes is covered
             // above. Test the pure filter with synthetic adapters so the
             // assertion is machine-independent.
-            let yes = ToolAdapter(id: "yes", displayName: "yes", detect: { true }, currentModel: { nil },
-                                  providers: { [] }, models: { _ in [] }, setModel: { _ in })
-            let no = ToolAdapter(id: "no", displayName: "no", detect: { false }, currentModel: { nil },
-                                 providers: { [] }, models: { _ in [] }, setModel: { _ in })
+            let yes = ToolAdapter(id: "yes", displayName: "yes", symbol: "checkmark", detect: { true },
+                                  currentModel: { nil }, providers: { [] }, models: { _ in [] }, setModel: { _ in })
+            let no = ToolAdapter(id: "no", displayName: "no", symbol: "xmark", detect: { false },
+                                 currentModel: { nil }, providers: { [] }, models: { _ in [] }, setModel: { _ in })
             check("the registry filters out undetected adapters",
                   Tools.detected([yes, no]).map(\.id) == ["yes"])
             check("the registry keeps a detected adapter",
                   Tools.detected([no, yes]).map(\.id) == ["yes"])
-            check("all four adapters are registered",
-                  Tools.all(cfg).map(\.id) == ["pi", "opencode", "hermes", "clawdbot"])
+            check("all three adapters are registered",
+                  Tools.all(cfg).map(\.id) == ["pi", "opencode", "hermes"])
+            check("every registered adapter carries a non-empty symbol",
+                  Tools.all(cfg).allSatisfy { !$0.symbol.isEmpty })
+            check("each adapter carries its own SF Symbol",
+                  Tools.all(cfg).map { "\($0.id)=\($0.symbol)" } == [
+                      "pi=circle.hexagongrid",
+                      "opencode=chevron.left.forwardslash.chevron.right",
+                      "hermes=paperplane",
+                  ])
 
             let missing = try no.state()
             check("state reports missing for an undetected adapter", missing == .missing)
@@ -476,7 +351,8 @@ enum SelfTest {
             check("hermes reports unset rather than throwing", hermesState == .unset)
 
             // An unreadable config must surface, not be quietly mapped to `.missing`.
-            let broken = ToolAdapter(id: "broken", displayName: "broken", detect: { true },
+            let broken = ToolAdapter(id: "broken", displayName: "broken", symbol: "exclamationmark",
+                                     detect: { true },
                                      currentModel: { throw ConfigError.malformed("/nonexistent", "unreadable") },
                                      providers: { [] }, models: { _ in [] }, setModel: { _ in })
             var stateThrew = false
@@ -487,80 +363,86 @@ enum SelfTest {
         }
     }
 
-    /// Exercises the Keychain against the test-only `selftest` account, never
-    /// the `openrouter` account the app itself writes. `set` upserts, so a
-    /// leftover item from an interrupted run does not wedge the suite. The item
-    /// is deleted again when the checks finish. Throwing calls are hoisted out
-    /// of `check`'s non-throwing autoclosure.
-    private static func checkKeychain() {
+    /// Pins the one "a key exists" rule against literals, offline. Three
+    /// directions, each separately falsifiable: `key != nil` (forgets the
+    /// emptiness guard) flips the empty check alone; `key == nil` flips the nil
+    /// check; `return false` flips the real-key check alone.
+    private static func checkUsableKey() {
+        check("a nil key is not usable", !isUsableAPIKey(nil))
+        check("an empty key is not usable", !isUsableAPIKey(""))
+        check("a non-empty key is usable", isUsableAPIKey("selftest-not-a-real-key"))
+    }
+
+    /// The opt-in Keychain backend, exercised against the test-only `selftest`
+    /// account (never the `openrouter` account the app writes), plus the storage
+    /// default. The item is removed again when the checks finish.
+    private static func checkKeyStorage() {
+        check("key storage defaults to the file", AppConfig().keyStorage == .file)
+
         var setFailed = false
         do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
         check("keychain set succeeds", !setFailed)
         check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
-
-        // Setting twice must overwrite, not fail: SecItemAdd on an existing
-        // item returns errSecDuplicateItem. A plain add would fail here.
-        var reSetFailed = false
-        do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
-        check("keychain set overwrites an existing value",
-            !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
 
         var deleteThrew = false
         do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
         check("keychain delete succeeds", !deleteThrew)
         check("keychain delete works", Keychain.get(account: "selftest") == nil)
 
-        // Removing a key that is already gone is a no-op, not an error —
-        // otherwise a second clear-key action would fail spuriously.
-        var absentDeleteThrew = false
-        do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
-        check("deleting an absent key does not throw", !absentDeleteThrew)
-
-        // Belt and braces: never leave the test account behind, even on failure.
+        // Belt and braces: never leave the test account behind.
         do { try Keychain.delete(account: "selftest") }
         catch { check("keychain cleanup failed: \(error)", false) }
     }
 
-    /// Pins the one "a key exists" rule against literals, offline. Three
-    /// directions, each separately falsifiable: `key != nil` (forgets the
-    /// emptiness guard) flips the empty check alone; `key == nil` flips the nil
-    /// check; `return false` flips the real-key check alone.
-    private static func checkUsableKey() {
-        check("a nil key is not usable", !Keychain.isUsableKey(nil))
-        check("an empty key is not usable", !Keychain.isUsableKey(""))
-        check("a non-empty key is usable", Keychain.isUsableKey("selftest-not-a-real-key"))
-    }
-
-    /// Pins `HarnessTiles`: a failed harness is excluded, a surviving healthy
-    /// harness keeps its own row rather than being replaced by a stub, and the
-    /// footer count is the number of excluded rows. The exclusion check fails if
-    /// the filter inverts; the surviving-row check fails if it filters the right
-    /// ids but rebuilds them from scratch; the count checks pin that only rows
-    /// (not hidden-tool failures) are counted.
+    /// Pins `HarnessTiles`: only an added, healthy harness is a tile, a
+    /// surviving healthy harness keeps its own row rather than being replaced by
+    /// a stub, and the footer count is the number of row-backed failures
+    /// regardless of `added`. The visibility checks fail if either half of the
+    /// filter (membership, or the failure exclusion) is dropped; the
+    /// surviving-row check fails if it filters the right ids but rebuilds them
+    /// from scratch; the count checks pin that only rows (not row-less failures)
+    /// are counted.
     private static func checkHarnessTiles() {
-        let healthy = ToolRow(id: "pi", displayName: "pi",
+        let healthy = ToolRow(id: "pi", displayName: "pi", symbol: "circle.hexagongrid",
                               state: .configured(ToolModelRef(provider: "openrouter", model: "a/b")),
-                              providers: ["openrouter"], writable: true)
-        let failed = ToolRow(id: "hermes", displayName: "hermes", state: .unset, providers: [], writable: false)
+                              providers: ["openrouter"])
+        let unadded = ToolRow(id: "opencode", displayName: "opencode",
+                              symbol: "chevron.left.forwardslash.chevron.right",
+                              state: .configured(ToolModelRef(provider: "openai", model: "c/d")),
+                              providers: ["openai"])
+        let failed = ToolRow(id: "hermes", displayName: "hermes", symbol: "paperplane",
+                             state: .unset, providers: [])
         let errors = ["hermes": "unreadable"]
 
-        let visible = HarnessTiles.visible(rows: [healthy, failed], failed: errors)
-        check("a failed harness is excluded from the tiles", visible.map(\.id) == ["pi"])
+        let visible = HarnessTiles.visible(rows: [healthy, failed, unadded], added: ["pi"], failed: errors)
+        check("only an added, healthy harness is a tile", visible.map(\.id) == ["pi"])
         // Catches a mutation that keeps the right ids but rebuilds the surviving
         // row as a default stub: `rows.filter { … }.map { ToolRow(id:…, displayName:…,
-        // state: .unset, providers: [], writable: false) }`. The id-only check
+        // state: .unset, providers: []) }`. The id-only check
         // above passes for that mutation; this one does not.
         check("a healthy harness is kept as a tile with its own state",
               visible.count == 1
                 && visible[0].displayName == "pi"
+                && visible[0].symbol == "circle.hexagongrid"
                 && visible[0].state == .configured(ToolModelRef(provider: "openrouter", model: "a/b"))
-                && visible[0].writable
                 && visible[0].providers == ["openrouter"])
+        // Membership is the opt-in half of the rule: an unadded harness with an
+        // unreadable-free config still must not tile.
+        check("a healthy harness that was not added is excluded",
+              HarnessTiles.visible(rows: [unadded], added: ["pi"], failed: [:]).isEmpty)
+        // Health is the other half: adding a harness must not resurrect a failed
+        // one.
+        check("an added harness that failed discovery is excluded",
+              HarnessTiles.visible(rows: [failed], added: ["hermes"], failed: errors).isEmpty)
         check("the failed count matches the excluded tiles",
               HarnessTiles.failedCount(rows: [healthy, failed], failed: errors) == 1)
-        // A failure with no row (e.g. a hidden tool) must not inflate the footer.
+        // A failure with no row must not inflate the footer.
         check("the failed count ignores failures that are not rows",
               HarnessTiles.failedCount(rows: [healthy], failed: ["hermes": "unreadable"]) == 0)
+        // The count is independent of `added`: removing a failed harness from
+        // the popover must not hide its failure.
+        check("the failed count counts a failed row even when it was not added",
+              HarnessTiles.failedCount(rows: [failed], failed: errors) == 1)
     }
 
     /// Exercises the pure OpenRouter parsers and the 24-hour catalog cache
@@ -787,6 +669,123 @@ enum SelfTest {
               CatalogCache.mergeDetails(existing: known, new: fresh) == fresh)
     }
 
+    /// Pins the OpenRouter endpoint-layer parsers and the two unit formatters.
+    /// All pure and offline: no network and no API key. A missing datum must be
+    /// `nil` (omitted), never 0, and a malformed/HTML body must throw rather
+    /// than parse as an empty table.
+    private static func checkEndpointsAndFormatting() {
+        check("a missing throughput is omitted, not zero", formatThroughput(nil) == nil)
+        check("a throughput value renders as tokens per second",
+              formatThroughput(45) == "45 tok/s")
+        // The API's own schema says milliseconds while its example says 0.25
+        // seconds; both branches are pinned so the heuristic cannot be dropped.
+        check("a latency below 5 renders as seconds", formatLatency(0.25) == "0.25 s")
+        check("a latency of 5 or more renders as milliseconds", formatLatency(250) == "250 ms")
+        check("a missing latency is omitted, not zero", formatLatency(nil) == nil)
+
+        do {
+            // The live ZDR body is the endpoint-object shape: `model_id` + the
+            // provider `tag`, not `model`/`provider`. The fixture must mirror
+            // that or the parser passes offline and throws in production.
+            let zdr = try OpenRouter.parseZDR(Data(
+                #"{"data":[{"model_id":"anthropic/claude-fable-latest","tag":"together"},{"model_id":"openai/gpt-4","tag":"openai"}]}"#.utf8))
+            check("parseZDR builds model_id pipe tag keys",
+                  zdr == ["anthropic/claude-fable-latest|together", "openai/gpt-4|openai"])
+            check("a malformed ZDR body throws",
+                  (try? OpenRouter.parseZDR(Data("<html>403</html>".utf8))) == nil)
+            check("a ZDR entry without model_id/tag throws rather than keying wrong",
+                  (try? OpenRouter.parseZDR(Data(#"{"data":[{"provider":"x"}]}"#.utf8))) == nil)
+
+            let providers = try OpenRouter.parseProviders(Data(
+                #"{"data":[{"slug":"together","privacy_policy_url":"https://together.example/privacy","terms_of_service_url":"https://together.example/tos"},{"slug":"openai","privacy_policy_url":null,"terms_of_service_url":null}]}"#.utf8))
+            check("parseProviders keys by slug and carries both URLs",
+                  providers["together"]?.privacy == "https://together.example/privacy"
+                      && providers["together"]?.tos == "https://together.example/tos")
+            check("a provider with null URLs parses as nil, not empty strings",
+                  providers["openai"]?.privacy == nil && providers["openai"]?.tos == nil)
+            // `/providers` keys on the base slug, but an endpoint tag can carry
+            // a region suffix (`google-vertex/global`), so the join must fall
+            // back to the base slug or those rows lose their links.
+            check("a region-scoped tag falls back to the base provider slug",
+                  OpenRouter.providerInfo(forSlug: "together/global", in: providers)?.privacy
+                      == "https://together.example/privacy")
+            check("an unknown slug with no base entry has no provider info",
+                  OpenRouter.providerInfo(forSlug: "nobody/global", in: providers) == nil)
+            check("a malformed providers body throws",
+                  (try? OpenRouter.parseProviders(Data("<html>403</html>".utf8))) == nil)
+
+            let endpoints = try OpenRouter.parseModelEndpoints(Data(
+                #"{"data":{"id":"anthropic/claude-fable-latest","endpoints":[{"tag":"together","provider_name":"Together","pricing":{"prompt":"0.000003","completion":"0.000015"},"throughput_last_30m":{"p50":45},"latency_last_30m":{"p50":0.25},"context_length":200000,"quantization":"fp8"},{"provider_name":"DeepInfra","pricing":{"prompt":"-1","completion":"-1"}}]}}"#.utf8),
+                zdrKeys: ["anthropic/claude-fable-latest|together"])
+            check("endpoints parse decimal-string prices",
+                  endpoints.count == 2
+                      && endpoints[0].promptPricePerToken == 0.000003
+                      && endpoints[0].completionPricePerToken == 0.000015)
+            check("an endpoint reads tag as the provider slug",
+                  endpoints[0].providerSlug == "together" && endpoints[0].providerName == "Together")
+            check("a missing tag falls back to the lowercased provider name",
+                  endpoints[1].providerSlug == "deepinfra" && endpoints[1].providerName == "DeepInfra")
+            check("a negative sentinel price is nil, not negative money",
+                  endpoints[1].promptPricePerToken == nil && endpoints[1].completionPricePerToken == nil)
+            check("a ZDR key marks its endpoint",
+                  endpoints[0].zdr && !endpoints[1].zdr)
+            check("missing throughput, latency, context and quantization are nil, not zero",
+                  endpoints[1].throughputP50 == nil && endpoints[1].latencyP50 == nil
+                      && endpoints[1].contextLength == nil && endpoints[1].quantization == nil)
+            check("an HTML body throws rather than parsing as an empty table",
+                  (try? OpenRouter.parseModelEndpoints(Data("<html>403</html>".utf8), zdrKeys: [])) == nil)
+        } catch {
+            check("endpoint parse checks could not run: \(error)", false)
+        }
+    }
+
+    /// Pins the `Table` sort keys: an optional numeric datum maps to the largest
+    /// finite value, so ascending sorts it last (a missing price is not a zero),
+    /// and a ZDR endpoint sorts before a non-ZDR one.
+    private static func checkProviderSorting() {
+        func endpoint(_ name: String, prompt: Double?, zdr: Bool = false) -> EndpointInfo {
+            EndpointInfo(providerSlug: name.lowercased(), providerName: name,
+                         promptPricePerToken: prompt, completionPricePerToken: nil,
+                         throughputP50: nil, latencyP50: nil, contextLength: nil,
+                         quantization: nil, zdr: zdr, privacyPolicyURL: nil,
+                         termsOfServiceURL: nil)
+        }
+        let rows = [endpoint("Beta", prompt: 3),
+                    endpoint("Alpha", prompt: nil, zdr: true),
+                    endpoint("Gamma", prompt: 1)]
+
+        check("a missing price maps to the largest sort key",
+              endpoint("Alpha", prompt: nil).promptOrder == .greatestFiniteMagnitude)
+        check("a present price uses its own value",
+              endpoint("Gamma", prompt: 1).promptOrder == 1)
+        let byPrice = rows.sorted(using: [KeyPathComparator(\EndpointInfo.promptOrder)])
+        check("price sort ascending puts the missing price last",
+              byPrice.map(\.providerName) == ["Gamma", "Beta", "Alpha"])
+        check("a ZDR endpoint sorts before a non-ZDR one",
+              endpoint("A", prompt: 1, zdr: true).zdrOrder < endpoint("B", prompt: 1).zdrOrder)
+        check("provider name is a working sort key",
+              rows.sorted(using: [KeyPathComparator(\EndpointInfo.providerName)]).map(\.providerName)
+                  == ["Alpha", "Beta", "Gamma"])
+    }
+
+    /// Pins the searchable picker's commit rule: a typed name or id resolves to
+    /// the option's id, and anything else is kept verbatim as a free-form id (the
+    /// locally-configured-model case). Pure, so it runs without a popover.
+    private static func checkSearchablePicker() {
+        let options = [(id: "openrouter/anthropic/claude-fable-latest", name: "Anthropic: Claude Fable"),
+                       (id: "deepseek/deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash")]
+        check("a typed display name resolves to its id",
+              resolveModelSelection("Anthropic: Claude Fable", in: options)
+                  == "openrouter/anthropic/claude-fable-latest")
+        check("a typed id resolves to itself",
+              resolveModelSelection("deepseek/deepseek-v4.1-flash", in: options)
+                  == "deepseek/deepseek-v4.1-flash")
+        check("unmatched text is kept verbatim as a free-form id",
+              resolveModelSelection("  local/model:x  ", in: options) == "local/model:x")
+        check("an empty selection resolves to empty, never an arbitrary option",
+              resolveModelSelection("", in: options) == "")
+    }
+
     /// Exercises the settings model and the two pure presentation/alert
     /// functions against temp paths. Throwing calls are hoisted out of `check`'s
     /// non-throwing autoclosure. Never touches a real user path: every settings
@@ -800,9 +799,26 @@ enum SelfTest {
 
             var c = AppConfig.load(from: settingsPath)
             c.refreshMinutes = 42
+            c.apiKey = "sk-or-v1-file-key"
             try c.save(to: settingsPath)
-            check("app settings round-trip",
-                  AppConfig.load(from: settingsPath).refreshMinutes == 42)
+            let loaded = AppConfig.load(from: settingsPath)
+            check("app settings round-trip", loaded.refreshMinutes == 42)
+            check("the api key round-trips through the settings file",
+                  loaded.apiKey == "sk-or-v1-file-key")
+            // The key is plain text here, so the file must stay owner-only.
+            let fileMode = (try? FileManager.default.attributesOfItem(atPath: settingsPath))?[.posixPermissions] as? NSNumber
+            check("the settings file is written owner-only (0600)", fileMode?.intValue == 0o600)
+
+            var registry = AppConfig.load(from: settingsPath)
+            registry.addedHarnesses = ["pi", "hermes"]
+            registry.providerOnly = ["deepseek/deepseek-v4.1-flash": ["together"]]
+            registry.keyStorage = .keychain
+            try registry.save(to: settingsPath)
+            let registryRound = AppConfig.load(from: settingsPath)
+            check("added harnesses, provider-only and key storage round-trip",
+                  registryRound.addedHarnesses == ["pi", "hermes"]
+                      && registryRound.providerOnly == ["deepseek/deepseek-v4.1-flash": ["together"]]
+                      && registryRound.keyStorage == .keychain)
 
             var fields = AppConfig.load(from: settingsPath)
             fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
@@ -817,13 +833,17 @@ enum SelfTest {
             check("a corrupt settings file falls back to defaults",
                   AppConfig.load(from: settingsPath).refreshMinutes == 10)
 
-            // The forward-compatibility pin: a missing key must cost only its
-            // own default, not reset the keys the file did contain.
-            try "{\"refreshMinutes\": 33}".write(toFile: settingsPath, atomically: true, encoding: .utf8)
+            // The forward-compatibility pin: a removed key must be ignored,
+            // and every other setting the file carried must survive the upgrade.
+            try "{\"refreshMinutes\": 33, \"hiddenTools\": [\"pi\"], \"binaryPathOverrides\": {\"legacy\": \"/opt/legacy\"}, \"showMoneyInMenuBar\": false, \"notifyBelowAmount\": 7.5}"
+                .write(toFile: settingsPath, atomically: true, encoding: .utf8)
             let older = AppConfig.load(from: settingsPath)
-            check("an older settings file keeps its values and gains the new defaults",
-                  older.refreshMinutes == 33 && older.showMoneyInMenuBar && older.showIconInMenuBar && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
-                      && older.hiddenTools.isEmpty && older.binaryPathOverrides.isEmpty && !older.launchAtLogin && older.notifyBelowAmount == 5.0)
+            check("an old settings file with removed keys keeps every other setting",
+                  older.refreshMinutes == 33 && !older.showMoneyInMenuBar && older.showIconInMenuBar
+                      && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
+                      && older.notifyBelowAmount == 7.5 && !older.launchAtLogin
+                      && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty
+                      && older.apiKey == nil && older.keyStorage == .file)
 
             // A present-but-mistyped value must cost only its own field: without
             // `try?` per field the whole decode throws and refreshMinutes resets
@@ -857,12 +877,12 @@ enum SelfTest {
             var login = base; login.launchAtLogin = true
             check("a launch-at-login change does not rebuild rows",
                   !ConfigChange.affectsRows(from: base, to: login))
-            var hidden = base; hidden.hiddenTools = ["pi"]
-            check("hiding a tool rebuilds the rows",
-                  ConfigChange.affectsRows(from: base, to: hidden))
-            var override = base; override.binaryPathOverrides["clawdbot"] = "/opt/clawdbot"
-            check("a clawdbot path override rebuilds the rows",
-                  ConfigChange.affectsRows(from: base, to: override))
+            var added = base; added.addedHarnesses = ["pi"]
+            check("adding a harness rebuilds the rows",
+                  ConfigChange.affectsRows(from: base, to: added))
+            var providerOnly = base; providerOnly.providerOnly = ["a/b": ["x"]]
+            check("a provider-only change does not rebuild rows",
+                  !ConfigChange.affectsRows(from: base, to: providerOnly))
 
             // The status item must never be left with nothing to render, or it cannot be clicked.
             check("money and icon both on renders both", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false) == (text: "$17.10", symbol: "dollarsign.circle"))
@@ -874,13 +894,15 @@ enum SelfTest {
             check("money shown, icon hidden and no balance yet still renders the icon", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: nil, error: false) == (text: nil, symbol: "dollarsign.circle"))
             check("money shown, icon hidden and an error still renders the money", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: true) == (text: "—", symbol: nil))
 
-            // Redaction replaces only the amount. The check flips if
-            // `redacted` is dropped from the amount branch, or if it is also
-            // applied to the em dash.
-            check("a redacted amount renders as dots", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false, redacted: true) == (text: "$••••", symbol: "dollarsign.circle"))
+            // Redaction replaces only the amount, with exactly `...$`. Each
+            // check flips separately: dropping `redacted` from the amount branch
+            // fails the first; applying it to the em dash fails the third;
+            // reviving a figure for the never-fetched case fails the fifth.
+            check("a redacted amount renders as exactly three dots and a dollar sign", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false, redacted: true) == (text: "...$", symbol: "dollarsign.circle"))
             check("an unredacted amount renders the real figure", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: false, redacted: false) == (text: "$17.10", symbol: "dollarsign.circle"))
             check("an error still shows the em dash while redacted", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: 17.1, error: true, redacted: true) == (text: "—", symbol: "dollarsign.circle"))
-            check("a redacted amount with the icon hidden still renders the dots", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false, redacted: true) == (text: "$••••", symbol: nil))
+            check("a redacted amount with the icon hidden still renders the dots", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false, redacted: true) == (text: "...$", symbol: nil))
+            check("a never-fetched balance is still nil while redacted", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false, redacted: true) == (text: nil, symbol: "dollarsign.circle"))
 
             // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
             check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))
@@ -898,17 +920,15 @@ enum SelfTest {
     }
 
     /// Verifies stagedInTempDir copies within a temp dir, maps fixture names to
-    /// the right fields, leaves absent fixtures absent, and chmods the stub.
+    /// the right fields, and leaves absent fixtures absent.
     private static func checkStaging() {
         let fm = FileManager.default
         do {
             let source = fm.temporaryDirectory
                 .appendingPathComponent("pcc-fixtures-\(UUID().uuidString)").path
-            try fm.createDirectory(atPath: "\(source)/bin", withIntermediateDirectories: true)
+            try fm.createDirectory(atPath: source, withIntermediateDirectories: true)
             try "{\"defaultProvider\":\"openrouter\"}".write(
                 toFile: "\(source)/pi-settings.json", atomically: true, encoding: .utf8)
-            try "#!/bin/sh\n".write(
-                toFile: "\(source)/bin/clawdbot", atomically: true, encoding: .utf8)
 
             let paths = try ToolPaths().stagedInTempDir(from: source)
             let root = (paths.piSettings as NSString).deletingLastPathComponent
@@ -921,16 +941,10 @@ enum SelfTest {
             check("absent fixture maps to a nonexistent temp path",
                   paths.opencodeConfig == "\(root)/opencode.json"
                       && !fm.fileExists(atPath: paths.opencodeConfig))
-            check("clawdbotDir is the staged config's parent",
-                  paths.clawdbotDir == root
-                      && (paths.clawdbotConfig as NSString).deletingLastPathComponent == root)
-            let attrs = try? fm.attributesOfItem(atPath: paths.clawdbotBin)
-            let mode = attrs?[.posixPermissions] as? NSNumber
-            check("staged clawdbot stub is executable 0755", mode?.intValue == 0o755)
 
             let other = try ToolPaths().stagedInTempDir(from: source)
             check("each staging call gets a fresh temp directory",
-                  other.clawdbotDir != paths.clawdbotDir)
+                  other.piSettings != paths.piSettings)
 
             try? fm.removeItem(atPath: source)
         } catch {
