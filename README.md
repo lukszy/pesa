@@ -16,8 +16,10 @@ and no third-party dependencies.
   bar shows `—` and the popover keeps the last known balance with its age; a
   balance that has never been fetched shows `—` in the same large style rather
   than a `$0.00` lie.
-- **Stat tiles** — under the balance, a two-column grid of small cards, one
-  card per present figure (a card is omitted, never shown as `$0.00`).
+- **Stat tiles** — under the balance, equal-sized cards four to a row, one card
+  per present figure (a card is omitted, never shown as `$0.00`). The **Key
+  limit** card is the exception: it spans the full width of its own row, because
+  it carries the progress bar and a longer caption.
   The per-key cards come from OpenRouter's `GET /api/v1/key`:
   - **Today**, **Week**, **Month** — spend on the stored API key
     (`usage_daily`/`usage_weekly`/`usage_monthly`).

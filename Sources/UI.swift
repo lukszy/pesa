@@ -138,6 +138,24 @@ private func expiryTile(_ usage: KeyUsage, now: Date) -> StatTile? {
     return StatTile(title: "Key", value: "expires in \(days)d")
 }
 
+/// Packs the tiles into display rows: "Key limit" becomes its own full-width row,
+/// and the rest go four to a row. Pure, so the layout rule is checked.
+func statRows(_ tiles: [StatTile]) -> [[StatTile]] {
+    var rows: [[StatTile]] = []
+    var row: [StatTile] = []
+    for tile in tiles {
+        if tile.title == "Key limit" {
+            if !row.isEmpty { rows.append(row); row = [] }
+            rows.append([tile])
+        } else {
+            row.append(tile)
+            if row.count == 4 { rows.append(row); row = [] }
+        }
+    }
+    if !row.isEmpty { rows.append(row) }
+    return rows
+}
+
 /// The harness window's one-line model summary, e.g.
 /// `1M context · $3.00/M in · $15.00/M out`. Each part is omitted when its
 /// datum is missing, and `nil` means there is nothing to show at all. These
@@ -967,32 +985,42 @@ struct PopoverView: View {
         return formatBalance(remaining)
     }
 
-    /// The stat grid: two columns of small cards under the balance, one card per
-    /// present figure. Empty (no grid) when nothing is known yet.
+    /// The stat tiles under the balance: four equal cards to a row, with the
+    /// "Key limit" card on a full-width row of its own because it carries the
+    /// bar and a longer caption. Empty (nothing) when no figure is known yet.
     @ViewBuilder
     private var statTiles: some View {
-        let tiles = widgetTiles(credits: state.accountCredits, usage: state.keyUsage,
-                                now: Date())
-        if !tiles.isEmpty {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: 8),
-                GridItem(.flexible(), spacing: 8),
-            ], spacing: 8) {
-                ForEach(tiles, id: \.title) { tile in
-                    statTile(tile)
+        let rows = statRows(widgetTiles(credits: state.accountCredits,
+                                        usage: state.keyUsage, now: Date()))
+        if !rows.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    if row.count == 1 && row[0].title == "Key limit" {
+                        statTile(row[0], wide: true)
+                    } else {
+                        HStack(spacing: 8) {
+                            ForEach(row, id: \.title) { statTile($0) }
+                            // Clear fillers keep a short final row's cards the
+                            // same width as a full one.
+                            ForEach(0..<(4 - row.count), id: \.self) { _ in
+                                Color.clear.frame(maxWidth: .infinity)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func statTile(_ tile: StatTile) -> some View {
+    private func statTile(_ tile: StatTile, wide: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(tile.title).font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1)
             Text(tile.value).font(.callout).bold()
-                .lineLimit(1).minimumScaleFactor(0.7)
+                .lineLimit(1).minimumScaleFactor(0.6)
             if let caption = tile.caption {
                 Text(caption).font(.caption2).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.7)
+                    .lineLimit(wide ? 1 : 2).minimumScaleFactor(0.7)
             }
             if let remaining = tile.progressRemaining,
                let total = tile.progressTotal, total > 0 {
@@ -1000,7 +1028,9 @@ struct PopoverView: View {
                     .progressViewStyle(.linear)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // A fixed minimum height makes every card the same size, whether or not
+        // it has a caption.
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
     }

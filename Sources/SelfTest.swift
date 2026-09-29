@@ -660,6 +660,19 @@ enum SelfTest {
         check("the free-model tile shows used of limit",
               fullTiles.first { $0.title == "Free models" }?.value == "12/50")
 
+        // The tile layout: four to a row, with "Key limit" on its own row.
+        check("key limit takes a full row and the rest pack four to a row",
+              statRows(fullTiles).map { $0.map(\.title) }
+                  == [["Tier", "Today", "Week", "Month"], ["Key limit"],
+                      ["BYOK", "Free models", "Key"]])
+        check("a short final row is still a single row",
+              statRows([StatTile(title: "Today", value: "$1"),
+                        StatTile(title: "Week", value: "$2")]).map { $0.map(\.title) }
+                  == [["Today", "Week"]])
+        check("rows wrap after four tiles",
+              statRows((1...5).map { StatTile(title: "T\($0)", value: "$0") }).map(\.count)
+                  == [4, 1])
+
         var expired = base
         expired.expiresAt = now.addingTimeInterval(-3600)
         check("a key expired this morning is an expired tile, not 0d",
