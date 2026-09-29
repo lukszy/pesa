@@ -294,6 +294,10 @@ final class AppState: ObservableObject {
     @Published var apiKeyInput = ""
     @Published var hasKey = false
     @Published var keyStatus: String?
+    /// Whether the Settings window shows its sidebar. Driven by the window's
+    /// title-bar toolbar (see `SettingsToolbarDelegate`), so it lives here rather
+    /// than as view `@State`.
+    @Published var showSidebar = true
     @Published var alertAuthorized = false
     @Published var authorizationStatusText = "Checking…"
     @Published var launchAtLoginError: String?
@@ -1282,11 +1286,10 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var state: AppState
     @State private var section: SettingsSection? = .general
-    @State private var showSidebar = true
 
     var body: some View {
         HStack(spacing: 0) {
-            if showSidebar {
+            if state.showSidebar {
                 List(selection: $section) {
                     ForEach(SettingsSection.allCases) { item in
                         Label(item.title, systemImage: item.symbol).tag(item)
@@ -1296,12 +1299,13 @@ struct SettingsView: View {
                 .frame(width: 195)
                 Divider()
             }
-            VStack(spacing: 0) {
-                sidebarToggleBar
-                detail
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        // The `Settings` scene ignores `.windowResizability` and separates a
+        // SwiftUI toolbar from the title bar, so the hosting NSWindow is
+        // configured directly instead (resizable + a real sidebar toolbar).
+        .background(SettingsWindowConfigurator())
         // Settings is where a harness is added, so it must run the detection
         // pass itself instead of waiting for the popover to have been opened.
         // Idempotent: the guard skips a pass that already ran.
@@ -1325,23 +1329,6 @@ struct SettingsView: View {
     /// same Settings window, not a separate one — otherwise the sidebar's
     /// selected section. `Set` and `Cancel` clear the edit target, which returns
     /// the pane to the harness list.
-    /// The always-visible sidebar toggle. It sits on the detail side because the
-    /// button must stay reachable once the sidebar is hidden.
-    private var sidebarToggleBar: some View {
-        HStack {
-            Button {
-                showSidebar.toggle()
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .buttonStyle(.borderless)
-            .help(showSidebar ? "Hide the sidebar" : "Show the sidebar")
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-    }
-
     @ViewBuilder
     private var detail: some View {
         switch section ?? .general {
