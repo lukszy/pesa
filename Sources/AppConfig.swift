@@ -9,6 +9,13 @@ import Foundation
 /// fall back to defaults, and every setting the file did contain would be
 /// silently reset. This app owns this file and its schema is growing, so that
 /// upgrade wipe is a real scenario, not a hypothetical.
+/// Where the OpenRouter key is stored. `file` is the default (plain
+/// `~/.pesa-app/settings.json`); `keychain` is the opt-in macOS Keychain.
+enum KeyStorage: String, Codable {
+    case file
+    case keychain
+}
+
 struct AppConfig: Codable {
     var refreshMinutes: Int = 10
     var launchAtLogin: Bool = false
@@ -19,8 +26,10 @@ struct AppConfig: Codable {
     var hidesAmountInMenuBar: Bool = false
     var notifyBelowEnabled: Bool = false
     var notifyBelowAmount: Double = 5.0
-    /// The OpenRouter API key. `nil` means none is stored. This file is the
-    /// key's home and is hand-editable (that is the point of the file default).
+    /// Where the key lives. Defaults to the file; the Keychain is opt-in.
+    var keyStorage: KeyStorage = .file
+    /// The OpenRouter API key, when `keyStorage == .file`. `nil` means none is
+    /// stored here. This file is hand-editable (the point of the file default).
     var apiKey: String?
 
     /// `~/.pesa-app`. A real user path; `load(from:)`/`save(to:)` take a path so
@@ -43,6 +52,7 @@ struct AppConfig: Codable {
         hidesAmountInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .hidesAmountInMenuBar)) ?? false
         notifyBelowEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .notifyBelowEnabled)) ?? false
         notifyBelowAmount = (try? c.decodeIfPresent(Double.self, forKey: .notifyBelowAmount)) ?? 5.0
+        keyStorage = (try? c.decodeIfPresent(KeyStorage.self, forKey: .keyStorage)) ?? .file
         // `String?` from `decodeIfPresent` is itself optional under `try?`, so it
         // is flattened explicitly rather than assigned as `String??`.
         apiKey = (try? c.decodeIfPresent(String.self, forKey: .apiKey)) ?? nil

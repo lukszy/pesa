@@ -244,6 +244,8 @@ func describeError(_ error: Error) -> String {
 /// `errorText` / `rows` happens on this actor.
 @MainActor
 final class AppState: ObservableObject {
+    static let keychainAccount = "openrouter"
+
     /// The one instance the app runs on. `AppDelegate` and the `Settings` scene
     /// must observe the same state; the delegate's property is not reliably
     /// ready when the scene body is first evaluated, so the instance is made
@@ -304,6 +306,11 @@ final class AppState: ObservableObject {
     /// is volatile and small, so it is never written to disk.
     private var endpointsCache: [String: (fetchedAt: Date, endpoints: [EndpointInfo])] = [:]
     private var endpointsTask: Task<Void, Never>?
+    /// The Keychain backend is read at most once per launch (macOS prompts per
+    /// access until the item's ACL trusts the app's signature); the file backend
+    /// needs no cache. Reset whenever the key or the backend changes.
+    private var cachedKeychainKey: String?
+    private var didReadKeychain = false
     /// The ref the editor last wrote (or opened with). An unchanged selection is
     /// never written back, so opening the editor does not rewrite the config.
     private var lastEditRef: ToolModelRef?
@@ -327,10 +334,60 @@ final class AppState: ObservableObject {
         if !FileManager.default.fileExists(atPath: AppConfig.path) {
             try? self.config.save()
         }
-        // The key lives in the settings file, so this is a plain read.
-        self.hasKey = isUsableAPIKey(self.config.apiKey)
+        // Reading the Keychain only when that backend is selected, so the file
+        // default never prompts.
+        if self.config.keyStorage == .keychain {
+            self.cachedKeychainKey = Keychain.get(account: Self.keychainAccount)
+            self.didReadKeychain = true
+        }
+        self.hasKey = isUsableAPIKey(self.currentKey())
         startRefreshTimer()
         Task { await refreshAuthorizationStatus() }
+    }
+
+    /// The key from whichever store `config.keyStorage` selects. The Keychain is
+    /// read at most once per launch; the file needs no cache.
+    private func currentKey() -> String? {
+        guard config.keyStorage == .keychain else { return config.apiKey }
+        if !didReadKeychain {
+            didReadKeychain = true
+            cachedKeychainKey = Keychain.get(account: Self.keychainAccount)
+        }
+        return cachedKeychainKey
+    }
+
+    /// Human-readable name of the active store, for the Settings status line.
+    var keyStorageDescription: String {
+        switch config.keyStorage {
+        case .file: return "~/.pesa-app/settings.json"
+        case .keychain: return "the Keychain"
+        }
+    }
+
+    /// Switches backend, carrying an existing key across so it is not lost, and
+    /// clearing the store it came from so the key never lives in two places.
+    func setKeyStorage(_ storage: KeyStorage) {
+        guard storage != config.keyStorage else { return }
+        let existing = currentKey()
+        config.keyStorage = storage
+        switch storage {
+        case .file:
+            if isUsableAPIKey(existing) { config.apiKey = existing }
+            try? Keychain.delete(account: Self.keychainAccount)
+            cachedKeychainKey = nil
+            didReadKeychain = true
+        case .keychain:
+            if let existing, isUsableAPIKey(existing) {
+                try? Keychain.set(existing, account: Self.keychainAccount)
+                cachedKeychainKey = existing
+            } else {
+                cachedKeychainKey = nil
+            }
+            didReadKeychain = true
+            if config.apiKey != nil { config.apiKey = nil }
+        }
+        hasKey = isUsableAPIKey(currentKey())
+        keyStatus = nil
     }
 
     // MARK: - Adapters
@@ -363,9 +420,9 @@ final class AppState: ObservableObject {
                 existing: CatalogCache.details, new: catalog.details)
         }
 
-        // The key comes from the settings file, so the guard and `hasKey` cannot
-        // disagree and nothing prompts.
-        let storedKey = config.apiKey
+        // The key comes from the active store, so the guard and `hasKey` cannot
+        // disagree.
+        let storedKey = currentKey()
         hasKey = isUsableAPIKey(storedKey)
         guard isUsableAPIKey(storedKey), let key = storedKey else {
             errorText = "No OpenRouter API key. Add one in Settings."
@@ -545,7 +602,7 @@ final class AppState: ObservableObject {
             editEndpoints = cached.endpoints
             return
         }
-        guard let key = config.apiKey, isUsableAPIKey(key) else {
+        guard let key = currentKey(), isUsableAPIKey(key) else {
             editEndpoints = []
             return
         }
@@ -584,27 +641,44 @@ final class AppState: ObservableObject {
 
     // MARK: - API key
 
-    /// Writes the key into `config.apiKey`; the `didSet` on `config` persists it
-    /// to `~/.pesa-app/settings.json` and surfaces a save failure via `errorText`.
+    /// Writes the key to the active store. The file backend persists through the
+    /// `didSet` on `config`; the Keychain backend talks to `Keychain` directly.
+    /// The other store is cleared, so the key never lives in two places.
     func saveKey() {
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             keyStatus = "Enter a key first."
             return
         }
-        config.apiKey = key
+        switch config.keyStorage {
+        case .file:
+            config.apiKey = key
+            try? Keychain.delete(account: Self.keychainAccount)
+            cachedKeychainKey = nil
+            didReadKeychain = true
+        case .keychain:
+            do {
+                try Keychain.set(key, account: Self.keychainAccount)
+            } catch {
+                keyStatus = "Could not save the key: \(describe(error))"
+                return
+            }
+            cachedKeychainKey = key
+            didReadKeychain = true
+            if config.apiKey != nil { config.apiKey = nil }
+        }
         apiKeyInput = ""
         hasKey = true
         // The previous key's per-key figures belong to a key that is no longer
         // stored; clear them so the popover cannot attribute them to the new key
         // until its own fetch lands.
         keyUsage = nil
-        keyStatus = "Key saved to ~/.pesa-app/settings.json."
+        keyStatus = "Key saved to \(keyStorageDescription)."
     }
 
     func testKey() async {
         let typed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = typed.isEmpty ? (config.apiKey ?? "") : typed
+        let key = typed.isEmpty ? (currentKey() ?? "") : typed
         guard isUsableAPIKey(key) else {
             keyStatus = "Enter a key first."
             return
@@ -618,7 +692,12 @@ final class AppState: ObservableObject {
     }
 
     func clearKey() {
+        // Clear both stores: a key left in the other one would reappear if the
+        // backend were switched back.
         config.apiKey = nil
+        try? Keychain.delete(account: Self.keychainAccount)
+        cachedKeychainKey = nil
+        didReadKeychain = true
         apiKeyInput = ""
         hasKey = false
         // `refresh()` returns early with no stored key, so without this the
@@ -1285,6 +1364,12 @@ struct SettingsView: View {
     private var apiKeyDetail: some View {
         Form {
             Section {
+                Picker("Store key in", selection: Binding(
+                    get: { state.config.keyStorage },
+                    set: { state.setKeyStorage($0) })) {
+                    Text("File (~/.pesa-app/settings.json)").tag(KeyStorage.file)
+                    Text("Keychain").tag(KeyStorage.keychain)
+                }
                 SecureField("OpenRouter API key", text: $state.apiKeyInput)
                 HStack {
                     Button("Save") { state.saveKey() }
@@ -1293,7 +1378,7 @@ struct SettingsView: View {
                     Button("Clear") { state.clearKey() }
                         .disabled(!state.hasKey)
                 }
-                Text(state.hasKey ? "A key is stored in ~/.pesa-app/settings.json." : "No key stored yet.")
+                Text(state.hasKey ? "A key is stored in \(state.keyStorageDescription)." : "No key stored yet.")
                     .foregroundStyle(.secondary)
                 if let status = state.keyStatus {
                     Text(status).foregroundStyle(.secondary)
@@ -1301,7 +1386,12 @@ struct SettingsView: View {
             } header: {
                 Text("OpenRouter API key")
             } footer: {
-                Text("Stored in ~/.pesa-app/settings.json, created owner-only (0600). It is a plain-text file, so keep that directory private.")
+                switch state.config.keyStorage {
+                case .file:
+                    Text("The file is created owner-only (0600), but the key is plain text — keep ~/.pesa-app private.")
+                case .keychain:
+                    Text("macOS may ask once to allow Keychain access; choose Always Allow. A rebuild with an ad-hoc signature makes it ask again.")
+                }
             }
         }
         .formStyle(.grouped)

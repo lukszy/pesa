@@ -30,6 +30,7 @@ enum SelfTest {
         checkHermesAdapter()
         checkRegistry()
         checkUsableKey()
+        checkKeyStorage()
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
         checkEndpointsAndFormatting()
@@ -370,6 +371,27 @@ enum SelfTest {
         check("a nil key is not usable", !isUsableAPIKey(nil))
         check("an empty key is not usable", !isUsableAPIKey(""))
         check("a non-empty key is usable", isUsableAPIKey("selftest-not-a-real-key"))
+    }
+
+    /// The opt-in Keychain backend, exercised against the test-only `selftest`
+    /// account (never the `openrouter` account the app writes), plus the storage
+    /// default. The item is removed again when the checks finish.
+    private static func checkKeyStorage() {
+        check("key storage defaults to the file", AppConfig().keyStorage == .file)
+
+        var setFailed = false
+        do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
+        check("keychain set succeeds", !setFailed)
+        check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
+
+        var deleteThrew = false
+        do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
+        check("keychain delete succeeds", !deleteThrew)
+        check("keychain delete works", Keychain.get(account: "selftest") == nil)
+
+        // Belt and braces: never leave the test account behind.
+        do { try Keychain.delete(account: "selftest") }
+        catch { check("keychain cleanup failed: \(error)", false) }
     }
 
     /// Pins `HarnessTiles`: only an added, healthy harness is a tile, a
@@ -790,11 +812,13 @@ enum SelfTest {
             var registry = AppConfig.load(from: settingsPath)
             registry.addedHarnesses = ["pi", "hermes"]
             registry.providerOnly = ["deepseek/deepseek-v4.1-flash": ["together"]]
+            registry.keyStorage = .keychain
             try registry.save(to: settingsPath)
             let registryRound = AppConfig.load(from: settingsPath)
-            check("added harnesses and provider-only round-trip",
+            check("added harnesses, provider-only and key storage round-trip",
                   registryRound.addedHarnesses == ["pi", "hermes"]
-                      && registryRound.providerOnly == ["deepseek/deepseek-v4.1-flash": ["together"]])
+                      && registryRound.providerOnly == ["deepseek/deepseek-v4.1-flash": ["together"]]
+                      && registryRound.keyStorage == .keychain)
 
             var fields = AppConfig.load(from: settingsPath)
             fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
@@ -819,7 +843,7 @@ enum SelfTest {
                       && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
                       && older.notifyBelowAmount == 7.5 && !older.launchAtLogin
                       && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty
-                      && older.apiKey == nil)
+                      && older.apiKey == nil && older.keyStorage == .file)
 
             // A present-but-mistyped value must cost only its own field: without
             // `try?` per field the whole decode throws and refreshMinutes resets

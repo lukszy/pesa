@@ -147,34 +147,37 @@ the real settings file, or `~/.pesa-app`.
 
 ## The API key
 
-The OpenRouter key is stored in `~/.pesa-app/settings.json`, in the `apiKey`
-field — a plain-text file, and the app's default storage. The directory and the
-file are created owner-only (`0700`/`0600`), but the value is **not encrypted**:
-anything running as your user can read it, so treat that directory as private.
+Settings has a **Store key in** picker with two backends:
 
-It is never logged or included in an error message. The app offers **Save**,
-**Test key** (calls `/credits` and reports the result) and **Clear**.
+- **File** (default) — `~/.pesa-app/settings.json`, the `apiKey` field. The
+directory and file are created owner-only (`0700`/`0600`), but the value is
+**not encrypted**: anything running as your user can read it, so keep that
+directory private.
+- **Keychain** — the macOS login Keychain (service `pesa`, account
+`openrouter`). Choosing it makes macOS ask to allow access once; click **Always
+Allow**. A rebuild with an ad-hoc signature changes the app's identity and makes
+it ask again — `scripts/make-signing-identity.sh` gives a stable identity.
 
-The key is read from the settings file as an ordinary in-memory value, so there
-is **no Keychain prompt at all**. To remove the key, use **Clear**, or edit
-`~/.pesa-app/settings.json` and delete the `apiKey` field.
+Switching the picker carries the stored key to the new backend and clears the
+old one, so a key never lives in two places. The key is never logged or included
+in an error message. **Save**, **Test key** (calls `/credits` and reports the
+result) and **Clear** act on the selected backend. In file mode the settings file
+is read at launch and written on every change, so a hand-edit made while the app
+is running is not picked up until the next launch.
 
-Older builds stored the key in the macOS Keychain (service
-`provider-cost-controller`, account `openrouter`). That item is no longer read;
-delete it once with:
+Older builds always used the Keychain, under service `provider-cost-controller`.
+That item is not read now; delete it once with:
 
 ```sh
 security delete-generic-password -s provider-cost-controller -a openrouter
 ```
-
-The settings file is read at launch and written on every change, so a hand-edit
-made while the app is running is not picked up until the next launch.
 
 ## Settings
 
 Settings live in `~/.pesa-app/settings.json`:
 
 - the OpenRouter API key (`apiKey`; plain text — see [The API key](#the-api-key))
+- where the key is stored (`keyStorage`: `file` or `keychain`)
 - refresh interval in minutes
 - launch at login
 - the harnesses shown in the popover (`addedHarnesses`, added and removed in Settings)
