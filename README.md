@@ -27,8 +27,6 @@ and no third-party dependencies.
     progress bar and the reset period (`limit_remaining`/`limit`/
     `limit_reset`). A key with no cap (`limit` null) shows no card.
   - **BYOK** — own-provider-key spend (`byok_usage`), only when non-zero.
-  - **Free models** — `used/limit` of the free-variant daily request quota
-    (`free_model_daily_requests`).
   - **Key** — `expires in Nd` when the key expires inside 30 days, or
     `expired` once past (`expires_at`). No card when it never expires.
   - **Tier** — `free` when `is_free_tier` is true.

@@ -32,6 +32,7 @@ enum SelfTest {
         checkUsableKey()
         checkKeyStorage()
         checkOpenRouter()
+        checkErrorDescriptions()
         checkKeyUsageAndModelDetails()
         checkEndpointsAndFormatting()
         checkProviderSorting()
@@ -652,19 +653,23 @@ enum SelfTest {
         let fullTiles = widgetTiles(credits: nil, usage: full, now: now)
         check("optional tiles appear only when their figure is present",
               fullTiles.map(\.title)
-                  == ["Tier", "Today", "Week", "Month", "Key limit", "BYOK", "Free models", "Key"])
+                  == ["Tier", "Today", "Week", "Month", "Key limit", "BYOK", "Key"])
         let limit = fullTiles.first { $0.title == "Key limit" }
         check("the key-limit tile carries the cap, its reset and its bar",
               limit?.value == "$2.12" && limit?.caption == "of $5.00 · resets monthly"
                   && limit?.progressRemaining == 2.12 && limit?.progressTotal == 5)
-        check("the free-model tile shows used of limit",
-              fullTiles.first { $0.title == "Free models" }?.value == "12/50")
 
-        // The tile layout: four to a row, with "Key limit" on its own row.
-        check("key limit takes a full row and the rest pack four to a row",
+        // The tile layout: four to a row, with the two wide tiles sharing a row.
+        check("key limit takes a full row when account spent is absent",
               statRows(fullTiles).map { $0.map(\.title) }
                   == [["Tier", "Today", "Week", "Month"], ["Key limit"],
-                      ["BYOK", "Free models", "Key"]])
+                      ["BYOK", "Key"]])
+        let paired = widgetTiles(credits: Credits(totalCredits: 100, totalUsage: 25.5),
+                                 usage: full, now: now)
+        check("key limit and account spent share a half-and-half row",
+              statRows(paired).map { $0.map(\.title) }
+                  == [["Tier", "Today", "Week", "Month"], ["Key limit", "Account spent"],
+                      ["BYOK", "Key"]])
         check("a short final row is still a single row",
               statRows([StatTile(title: "Today", value: "$1"),
                         StatTile(title: "Week", value: "$2")]).map { $0.map(\.title) }
@@ -864,6 +869,24 @@ enum SelfTest {
               resolveModelSelection("  local/model:x  ", in: options) == "local/model:x")
         check("an empty selection resolves to empty, never an arbitrary option",
               resolveModelSelection("", in: options) == "")
+    }
+
+    /// Pins `describeError`: a URLSession failure reads as a sentence, the
+    /// actionable HTTP statuses say what to do, and an unmapped case keeps its
+    /// own text rather than inventing a cause.
+    private static func checkErrorDescriptions() {
+        check("a lost connection reads as a sentence",
+              describeError(URLError(.notConnectedToInternet)) == "No internet connection.")
+        check("a timeout reads as a sentence",
+              describeError(URLError(.timedOut)) == "The request to OpenRouter timed out.")
+        check("a 401 points at the key",
+              describeError(OpenRouterError.badStatus(401)).contains("API key"))
+        check("a 429 says it will clear",
+              describeError(OpenRouterError.badStatus(429)).contains("rate limited"))
+        check("an unmapped HTTP status keeps its code",
+              describeError(OpenRouterError.badStatus(418)) == "OpenRouter returned HTTP 418.")
+        check("an unmapped network error still names it a network error",
+              describeError(URLError(.badServerResponse)).hasPrefix("Network error:"))
     }
 
     /// Exercises the settings model and the two pure presentation/alert

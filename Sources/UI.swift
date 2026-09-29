@@ -106,24 +106,29 @@ func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
                 progressRemaining: progress.remaining,
                 progressTotal: progress.total))
         }
+        // Account spent sits next to Key limit so the two half-width tiles share
+        // a row (see `statRows`).
+        tiles.append(contentsOf: accountTiles(credits))
         if let byok = usage.byokUsage, byok > 0 {
             tiles.append(StatTile(title: "BYOK", value: formatBalance(byok),
                                   caption: "own provider keys"))
         }
-        if let quota = usage.freeModelQuota {
-            tiles.append(StatTile(title: "Free models", value: "\(quota.used)/\(quota.limit)",
-                                  caption: "today"))
-        }
         if let expiry = expiryTile(usage, now: now) { tiles.append(expiry) }
-    }
-    if let credits, credits.totalCredits > 0 {
-        let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
-        tiles.append(StatTile(
-            title: "Account spent",
-            value: formatBalance(credits.totalUsage),
-            caption: "\(percent)% of \(formatBalance(credits.totalCredits))"))
+    } else {
+        tiles.append(contentsOf: accountTiles(credits))
     }
     return tiles
+}
+
+/// The account-wide tile, or none when nothing has been purchased (the share
+/// would be undefined). Separate so it can be placed without a usage payload.
+private func accountTiles(_ credits: Credits?) -> [StatTile] {
+    guard let credits, credits.totalCredits > 0 else { return [] }
+    let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
+    return [StatTile(
+        title: "Account spent",
+        value: formatBalance(credits.totalUsage),
+        caption: "\(percent)% of \(formatBalance(credits.totalCredits))")]
 }
 
 /// The key's expiry as a tile, but only when it is worth flagging: expired, or
@@ -138,21 +143,46 @@ private func expiryTile(_ usage: KeyUsage, now: Date) -> StatTile? {
     return StatTile(title: "Key", value: "expires in \(days)d")
 }
 
-/// Packs the tiles into display rows: "Key limit" becomes its own full-width row,
-/// and the rest go four to a row. Pure, so the layout rule is checked.
+/// How many of the grid's four columns a tile spans. Key limit and Account
+/// spent are the wide ones; everything else is a single column.
+func statSpan(_ tile: StatTile) -> Int {
+    (tile.title == "Key limit" || tile.title == "Account spent") ? 2 : 1
+}
+
+/// Packs the tiles into display rows. Narrow tiles go four to a row; a wide tile
+/// starts its own row and is joined by the next wide tile if one follows, so Key
+/// limit and Account spent share one half-and-half row. Pure, so the layout rule
+/// is checked.
 func statRows(_ tiles: [StatTile]) -> [[StatTile]] {
     var rows: [[StatTile]] = []
     var row: [StatTile] = []
-    for tile in tiles {
-        if tile.title == "Key limit" {
-            if !row.isEmpty { rows.append(row); row = [] }
-            rows.append([tile])
-        } else {
-            row.append(tile)
-            if row.count == 4 { rows.append(row); row = [] }
-        }
+    var rowHasWide = false
+
+    func flush() {
+        if !row.isEmpty { rows.append(row) }
+        row = []
+        rowHasWide = false
     }
-    if !row.isEmpty { rows.append(row) }
+
+    for tile in tiles {
+        if statSpan(tile) == 2 {
+            if rowHasWide {
+                row.append(tile)   // pair the two wide tiles and close the row
+                flush()
+            } else {
+                flush()
+                row = [tile]
+                rowHasWide = true
+            }
+            continue
+        }
+        // A wide tile waiting for a partner takes its row alone; a narrow tile
+        // after it starts a fresh row.
+        if rowHasWide { flush() }
+        row.append(tile)
+        if row.count == 4 { flush() }
+    }
+    flush()
     return rows
 }
 
@@ -316,9 +346,39 @@ func discoverAdapters(_ adapters: [ToolAdapter]) -> DiscoveryOutcome {
 func describeError(_ error: Error) -> String {
     if let openRouter = error as? OpenRouterError {
         switch openRouter {
-        case .badStatus(let status): return "OpenRouter returned HTTP \(status)."
+        case .badStatus(let status):
+            // The two statuses a user can act on get their own sentence; the
+            // rest keep the bare code so it is never guessed at.
+            switch status {
+            case 401: return "OpenRouter rejected the API key (HTTP 401). Check it in Settings."
+            case 402: return "OpenRouter returned HTTP 402 — the account or this key is out of credit."
+            case 403: return "OpenRouter returned HTTP 403 — the key is not allowed to make this request."
+            case 429: return "OpenRouter returned HTTP 429 — rate limited. It will clear on its own."
+            default: return "OpenRouter returned HTTP \(status)."
+            }
         case .notJSON: return "OpenRouter sent a response this app could not read."
         case .missingField(let field): return "OpenRouter's response was missing \(field)."
+        }
+    }
+    // A failed URLSession request. The raw `URLError` description is a domain,
+    // a code and a key, which is not something to show a user, so each common
+    // case gets a plain sentence; anything else keeps the system's text.
+    if let urlError = error as? URLError {
+        switch urlError.code {
+        case .notConnectedToInternet:
+            return "No internet connection."
+        case .timedOut:
+            return "The request to OpenRouter timed out."
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .networkConnectionLost:
+            return "Could not reach openrouter.ai. Check your connection."
+        case .secureConnectionFailed, .serverCertificateUntrusted,
+             .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot:
+            return "Could not open a secure connection to OpenRouter."
+        case .cancelled:
+            return "The request was cancelled."
+        default:
+            return "Network error: \(urlError.localizedDescription)"
         }
     }
     return String(describing: error)
@@ -937,7 +997,9 @@ struct PopoverView: View {
             .padding(12)
         }
         .frame(width: 380)
-        .frame(maxHeight: 520)
+        // Tall enough for the amount, the updated line and the tile grid without
+        // scrolling; the scroll view is only a fallback for a short screen.
+        .frame(maxHeight: 720)
     }
 
     // MARK: Header
@@ -953,7 +1015,7 @@ struct PopoverView: View {
             // hides it. The status item's text comes from MenuBarPresentation,
             // not from this view.
             Text(balanceText)
-                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                .font(.system(size: 52, weight: .semibold, design: .rounded))
                 .padding(.top, 18)
                 .padding(.bottom, 18)
             // How fresh the figures are, directly under the amount and above the
@@ -997,13 +1059,13 @@ struct PopoverView: View {
         if !rows.isEmpty {
             VStack(spacing: 8) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    if row.count == 1 && row[0].title == "Key limit" {
-                        statTile(row[0], wide: true)
-                    } else {
-                        HStack(spacing: 8) {
-                            ForEach(row, id: \.title) { statTile($0) }
-                            // Clear fillers keep a short final row's cards the
-                            // same width as a full one.
+                    let hasWide = row.contains { statSpan($0) == 2 }
+                    HStack(spacing: 8) {
+                        ForEach(row, id: \.title) { statTile($0, wide: statSpan($0) == 2) }
+                        // Clear fillers keep a short row's cards the same width
+                        // as a full four-up row. A row that holds a wide tile is
+                        // left unfilled, so two wide tiles split it in half.
+                        if !hasWide {
                             ForEach(0..<(4 - row.count), id: \.self) { _ in
                                 Color.clear.frame(maxWidth: .infinity)
                             }
