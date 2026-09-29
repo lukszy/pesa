@@ -151,6 +151,14 @@ It is never written to a plain file, logged, or included in an error message.
 The app offers **Test key** (calls `/credits` and reports the result) and
 **Clear**.
 
+The key is read from the Keychain **once per launch** and cached in memory:
+`AppState` reads it in `init` and never again, so the launch refresh, the
+refresh timer, the harness editor's endpoint fetch, and **Test key** all reuse
+it. Earlier builds re-read on every one of those, which is why macOS prompted
+several times in one session. An external change (for example
+`security delete-generic-password`) is picked up on the next launch, or
+immediately with **Save**/**Clear**.
+
 To remove the key:
 
 ```sh
@@ -159,10 +167,14 @@ security delete-generic-password -s provider-cost-controller -a openrouter
 
 or use the **Clear** button in the app's Settings.
 
-A key saved by an older ad-hoc-signed build has its Keychain ACL bound to the
-old code hash. Its first read by the newly certificate-signed app may therefore
-still prompt once; click **Always Allow** (or delete and re-save the key from the
-new build) to rebind it. The signing identity only stops future prompts.
+macOS prompts for each Keychain access until the item's ACL trusts the app's
+code signature. A key saved by an older ad-hoc-signed build has its ACL bound to
+the old code hash, so the first read by the newly certificate-signed app prompts
+once; click **Always Allow** (or delete and re-save the key from the new build)
+to rebind it. An ad-hoc signature's hash changes on every rebuild, so after each
+`scripts/build.sh` the app looks like a new program and prompts again — run
+`scripts/make-signing-identity.sh` once for a stable, certificate-based identity
+that survives rebuilds. The Settings API-key section says the same thing.
 
 ## Settings
 

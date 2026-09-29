@@ -297,13 +297,35 @@ final class AppState: ObservableObject {
     /// Set when a discovery request lands mid-pass, so the newer settings are
     /// picked up instead of being dropped as stale.
     private var discoveryPending = false
+    /// In-memory copy of the stored key, so the Keychain is read at most once
+    /// per launch. macOS prompts for each access until the item's ACL trusts the
+    /// app's code signature; the old code re-read on every refresh and every
+    /// editor fetch, so one session prompted repeatedly. `saveKey`/`clearKey`
+    /// keep this in step.
+    private var cachedKey: String?
+    private var didLoadKey = false
 
     init(paths: ToolPaths = .real) {
         self.paths = paths
         self.config = AppConfig.load()
-        self.hasKey = Keychain.isUsableKey(Keychain.get(account: Self.keychainAccount))
+        // The one Keychain read of the launch; everything after this reuses the
+        // cache instead of prompting again.
+        self.cachedKey = Keychain.get(account: Self.keychainAccount)
+        self.didLoadKey = true
+        self.hasKey = Keychain.isUsableKey(self.cachedKey)
         startRefreshTimer()
         Task { await refreshAuthorizationStatus() }
+    }
+
+    /// The stored key from the one-per-launch cache. An external change (e.g.
+    /// `security delete-generic-password`) is not noticed until the next launch;
+    /// that is the deliberate cost of not re-prompting on every refresh.
+    private func loadStoredKey() -> String? {
+        if !didLoadKey {
+            didLoadKey = true
+            cachedKey = Keychain.get(account: Self.keychainAccount)
+        }
+        return cachedKey
     }
 
     // MARK: - Adapters
@@ -336,10 +358,10 @@ final class AppState: ObservableObject {
                 existing: CatalogCache.details, new: catalog.details)
         }
 
-        // One read serves both the guard and `hasKey`: an external add or
-        // removal is reconciled here, so the popover's key claim and its usage
-        // line cannot disagree.
-        let storedKey = Keychain.get(account: Self.keychainAccount)
+        // Cached read: the guard and `hasKey` still agree, but a refresh no
+        // longer re-prompts the Keychain. An external add or removal is picked
+        // up on the next launch, or immediately via Save/Clear here.
+        let storedKey = loadStoredKey()
         hasKey = Keychain.isUsableKey(storedKey)
         guard Keychain.isUsableKey(storedKey), let key = storedKey else {
             errorText = "No OpenRouter API key. Add one in Settings."
@@ -502,7 +524,7 @@ final class AppState: ObservableObject {
             editEndpoints = cached.endpoints
             return
         }
-        guard let key = Keychain.get(account: Self.keychainAccount), Keychain.isUsableKey(key) else {
+        guard let key = loadStoredKey(), Keychain.isUsableKey(key) else {
             editEndpoints = []
             return
         }
@@ -543,6 +565,10 @@ final class AppState: ObservableObject {
         }
         do {
             try Keychain.set(key, account: Self.keychainAccount)
+            // The saved value is the new cache: no read needed, and the next
+            // refresh uses it without a prompt.
+            cachedKey = key
+            didLoadKey = true
             apiKeyInput = ""
             hasKey = true
             // The previous key's per-key figures belong to a key that is no
@@ -557,7 +583,7 @@ final class AppState: ObservableObject {
 
     func testKey() async {
         let typed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = typed.isEmpty ? (Keychain.get(account: Self.keychainAccount) ?? "") : typed
+        let key = typed.isEmpty ? (loadStoredKey() ?? "") : typed
         guard Keychain.isUsableKey(key) else {
             keyStatus = "Enter a key first."
             return
@@ -573,6 +599,8 @@ final class AppState: ObservableObject {
     func clearKey() {
         do {
             try Keychain.delete(account: Self.keychainAccount)
+            cachedKey = nil
+            didLoadKey = true
             apiKeyInput = ""
             hasKey = false
             // `refresh()` returns early with no stored key, so without this the
@@ -1120,6 +1148,8 @@ struct SettingsView: View {
                     .disabled(!state.hasKey)
             }
             Text(state.hasKey ? "A key is stored in the Keychain." : "No key stored yet.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("macOS asks once to allow Keychain access — choose Always Allow. A rebuild with an ad-hoc signature changes the app's identity and makes it ask again; run scripts/make-signing-identity.sh once to stop that.")
                 .font(.caption).foregroundStyle(.secondary)
             if let status = state.keyStatus {
                 Text(status).font(.caption).foregroundStyle(.secondary)
