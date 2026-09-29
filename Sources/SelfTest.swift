@@ -635,7 +635,8 @@ enum SelfTest {
         let withAccount = widgetTiles(
             credits: Credits(totalCredits: 100, totalUsage: 25.5), usage: base, now: now)
         check("the base tiles are today, week, month and account spent",
-              withAccount.map(\.title) == ["Today", "Week", "Month", "Account spent"])
+              withAccount.map(\.title)
+                  == ["Today (UTC)", "Week (UTC)", "Month (UTC)", "Account spent"])
         check("the usage tiles format their figures",
               withAccount[0].value == "$1.50" && withAccount[1].value == "$10.25"
                   && withAccount[2].value == "$92.17")
@@ -653,7 +654,8 @@ enum SelfTest {
         let fullTiles = widgetTiles(credits: nil, usage: full, now: now)
         check("optional tiles appear only when their figure is present",
               fullTiles.map(\.title)
-                  == ["Tier", "Today", "Week", "Month", "Key limit", "BYOK", "Key"])
+                  == ["Tier", "Today (UTC)", "Week (UTC)", "Month (UTC)",
+                      "Key limit", "BYOK", "Key"])
         let limit = fullTiles.first { $0.title == "Key limit" }
         check("the key-limit tile carries the cap, its reset and its bar",
               limit?.value == "$2.12" && limit?.caption == "of $5.00 · resets monthly"
@@ -662,14 +664,14 @@ enum SelfTest {
         // The tile layout: four to a row, with the two wide tiles sharing a row.
         check("key limit takes a full row when account spent is absent",
               statRows(fullTiles).map { $0.map(\.title) }
-                  == [["Tier", "Today", "Week", "Month"], ["Key limit"],
-                      ["BYOK", "Key"]])
+                  == [["Tier", "Today (UTC)", "Week (UTC)", "Month (UTC)"],
+                      ["Key limit"], ["BYOK", "Key"]])
         let paired = widgetTiles(credits: Credits(totalCredits: 100, totalUsage: 25.5),
                                  usage: full, now: now)
         check("key limit and account spent share a half-and-half row",
               statRows(paired).map { $0.map(\.title) }
-                  == [["Tier", "Today", "Week", "Month"], ["Key limit", "Account spent"],
-                      ["BYOK", "Key"]])
+                  == [["Tier", "Today (UTC)", "Week (UTC)", "Month (UTC)"],
+                      ["Key limit", "Account spent"], ["BYOK", "Key"]])
         check("a short final row is still a single row",
               statRows([StatTile(title: "Today", value: "$1"),
                         StatTile(title: "Week", value: "$2")]).map { $0.map(\.title) }

@@ -94,9 +94,12 @@ func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
         if usage.isFreeTier == true {
             tiles.append(StatTile(title: "Tier", value: "free"))
         }
-        tiles.append(StatTile(title: "Today", value: formatBalance(usage.usageDaily)))
-        tiles.append(StatTile(title: "Week", value: formatBalance(usage.usageWeekly)))
-        tiles.append(StatTile(title: "Month", value: formatBalance(usage.usageMonthly)))
+        // OpenRouter's day/week/month windows are **UTC** (daily resets at UTC
+        // midnight, weekly is Monday–Sunday UTC), so the titles say so rather
+        // than implying the user's local day.
+        tiles.append(StatTile(title: "Today (UTC)", value: formatBalance(usage.usageDaily)))
+        tiles.append(StatTile(title: "Week (UTC)", value: formatBalance(usage.usageWeekly)))
+        tiles.append(StatTile(title: "Month (UTC)", value: formatBalance(usage.usageMonthly)))
         if let progress = usage.limitProgress {
             let reset = usage.limitReset.map { " · resets \($0)" } ?? ""
             tiles.append(StatTile(
