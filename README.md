@@ -124,7 +124,12 @@ changes):
 ```
 
 `build-app.sh` picks the identity up automatically from then on; the app's
-designated requirement is certificate-based and survives code changes. Override
+designated requirement is certificate-based and survives code changes. It prints
+the resulting requirement after signing (`certificate-based requirement —
+stable`, or a `cdhash-based (ad-hoc)` warning with the fix), so a build that
+will re-prompt for Keychain access says so instead of looking successful. A
+self-signed identity shows as `CSSMERR_TP_NOT_TRUSTED` in `security
+find-identity`; both scripts explain that this is expected and harmless. Override
 the choice with `SIGNING_IDENTITY=<name>`, which falls back to ad-hoc if the
 name is not in the Keychain. To remove the identity:
 `security delete-identity -c "ProviderCostController Signing"`.
