@@ -1393,15 +1393,30 @@ struct SettingsView: View {
                     Text("File (~/.pesa-app/settings.json)").tag(KeyStorage.file)
                     Text("Keychain").tag(KeyStorage.keychain)
                 }
-                // Full-width on its own line, with a prompt: a bare `SecureField`
-                // in a grouped `Form` puts its label on the left and shares the
-                // row, which pushes the field narrow. When a key is stored, the
-                // empty field shows a shadowed mask instead of the paste prompt,
-                // so it does not read as "no key".
-                SecureField("OpenRouter API key", text: $state.apiKeyInput, prompt: Text(
-                    state.hasKey ? "**************" : "Paste your OpenRouter API key"))
-                    .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
+                // Full-width on its own line. A bare `SecureField` in a grouped
+                // `Form` puts its label on the left and shares the row, pushing
+                // the field narrow, so the label is hidden and the field stands
+                // alone.
+                ZStack(alignment: .leading) {
+                    SecureField("OpenRouter API key", text: $state.apiKeyInput, prompt: Text(
+                        state.hasKey ? "" : "Paste your OpenRouter API key"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                    // A stored key shows a shadowed mask that runs the full width
+                    // of the field. The overlay takes no clicks, so the field
+                    // stays editable underneath and the mask clears on typing.
+                    if state.hasKey && state.apiKeyInput.isEmpty {
+                        // A full run, clipped at the field's edge rather than
+                        // truncated with an ellipsis.
+                        Text(String(repeating: "•", count: 400))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .clipped()
                 HStack {
                     Button("Save") { state.saveKey() }
                         .disabled(state.apiKeyInput.isEmpty)
