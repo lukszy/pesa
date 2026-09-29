@@ -983,21 +983,21 @@ struct PopoverView: View {
     @ObservedObject var state: AppState
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                header
-                Divider()
-                toolList
-                if let error = state.toolErrorText {
-                    Text(error).font(.caption).foregroundStyle(.red)
-                }
+        // No ScrollView: a capped scroller made the popover a fixed short height
+        // with the tiles scrolling inside. `fixedSize(vertical:)` reports the true
+        // content height instead, so the hosting popover grows to fit the amount,
+        // the timestamp and the tile grid as they change.
+        VStack(alignment: .leading, spacing: 12) {
+            header
+            Divider()
+            toolList
+            if let error = state.toolErrorText {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
-            .padding(12)
         }
+        .padding(12)
         .frame(width: 380)
-        // Tall enough for the amount, the updated line and the tile grid without
-        // scrolling; the scroll view is only a fallback for a short screen.
-        .frame(maxHeight: 860)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Header
