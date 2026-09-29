@@ -94,11 +94,27 @@ func formatKeyBadges(_ usage: KeyUsage, now: Date) -> String? {
         parts.append("free models \(quota.used)/\(quota.limit) today")
     }
     if let expires = usage.expiresAt {
-        let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
-        if days < 0 { parts.append("key expired") }
-        else if days <= 30 { parts.append("expires in \(days)d") }
+        // Compare the dates directly. `dateComponents(.day)` truncates toward
+        // zero, so an expiry an hour ago would yield 0 and fall through to
+        // "expires in 0d" instead of "key expired".
+        if expires <= now {
+            parts.append("key expired")
+        } else {
+            let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
+            if days <= 30 { parts.append("expires in \(days)d") }
+        }
     }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
+/// The usage line's tooltip: which figure is which, plus the optional key label
+/// and all-time spend from `/key`. The line itself stays "This key" so a per-key
+/// figure is never mistaken for the account-wide one above it.
+func formatKeyUsageTooltip(_ usage: KeyUsage) -> String {
+    var text = "Usage for this API key, not the account. The balance above is account-wide."
+    if let label = usage.label { text += " Key: \(label)." }
+    if let total = usage.usageTotal { text += " All time \(formatBalance(total))." }
+    return text
 }
 
 /// The harness window's one-line model summary, e.g.
@@ -915,7 +931,7 @@ struct PopoverView: View {
             if let usage = state.keyUsage {
                 Text(formatKeyUsageLine(usage))
                     .font(.caption).foregroundStyle(.secondary)
-                    .help("Usage for this API key, not the account. The balance above is account-wide.")
+                    .help(formatKeyUsageTooltip(usage))
                 if let progress = usage.limitProgress {
                     ProgressView(value: progress.remaining, total: progress.total)
                         .progressViewStyle(.linear)

@@ -35,8 +35,9 @@ and no third-party dependencies.
   something to say: `free tier`, own-provider-key spend (`BYOK $3.50`), the
   free-model daily quota (`free models 12/50 today`, from
   `free_model_daily_requests`), and an expiry warning inside 30 days
-  (`expires in 10d`, from `expires_at`). These come from the same `/key`
-  response and are omitted, never shown as 0.
+  (`expires in 10d`, from `expires_at`) or `key expired` once the key is past.
+  These come from the same `/key` response and are omitted, never shown as 0.
+  The usage line's tooltip carries the key's label and its all-time spend.
 - **Opt-in popover** — the popover shows only the harnesses the user added in
   Settings (`addedHarnesses`); detection still finds every installed harness so
   Settings can offer them, but nothing auto-populates the grid. Each harness row

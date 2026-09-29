@@ -650,9 +650,24 @@ enum SelfTest {
         badges.expiresAt = now.addingTimeInterval(-day)
         check("an expired key says so",
               formatKeyBadges(badges, now: now)?.contains("key expired") == true)
+        // The sub-day case: `dateComponents(.day)` truncates toward zero, so
+        // without the direct date comparison this would say "expires in 0d".
+        badges.expiresAt = now.addingTimeInterval(-3600)
+        check("a key expired this morning says expired, not 0d",
+              formatKeyBadges(badges, now: now)?.contains("key expired") == true)
         badges.expiresAt = now.addingTimeInterval(200 * day)
         check("a key expiring far out shows no expiry badge",
               formatKeyBadges(badges, now: now)?.contains("expires") == false)
+
+        var labelled = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1)
+        labelled.label = "sk-or-v1-ab...cd"
+        labelled.usageTotal = 118.44
+        let tooltip = formatKeyUsageTooltip(labelled)
+        check("the usage tooltip carries the key label and all-time spend",
+              tooltip.contains("sk-or-v1-ab...cd") && tooltip.contains("$118.44"))
+        check("a bare usage tooltip has no all-time clause",
+              !formatKeyUsageTooltip(KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1))
+                  .contains("All time"))
 
         do {
             let details = try OpenRouter.parseModelDetails(Data(
