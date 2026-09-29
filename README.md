@@ -212,8 +212,12 @@ credits…** (opens OpenRouter's credits page in the default browser), and
 The per-agent model editor is not a separate window. It is the **Agent
 Harnesses** pane's detail view in the same Settings window: choosing a harness
 (its **Configure…** button or a popover tile, which opens Settings at that
-harness) swaps the detail pane for the editor, with **Set** and **Cancel**
-returning to the harness list. Cancel writes nothing.
+harness) swaps the Agent Harnesses detail pane for the editor. There is no
+**Set** button: a provider or model change is written to the harness
+immediately, and a **Harnesses** back link returns to the list. Re-selecting the
+value the harness already has writes nothing, so opening the editor is
+side-effect free. The sidebar stays live while editing, so another section can
+be selected without losing the change.
 
 ### Launch at login
 

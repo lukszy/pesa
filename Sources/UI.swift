@@ -291,6 +291,13 @@ final class AppState: ObservableObject {
     /// is volatile and small, so it is never written to disk.
     private var endpointsCache: [String: (fetchedAt: Date, endpoints: [EndpointInfo])] = [:]
     private var endpointsTask: Task<Void, Never>?
+    /// The ref the editor last wrote (or opened with). An unchanged selection is
+    /// never written back, so opening the editor does not rewrite the config.
+    private var lastEditRef: ToolModelRef?
+    /// True while the editor seeds or re-seeds its fields, so seeding is not
+    /// treated as a user edit — otherwise opening an unset harness would write
+    /// the first catalog model into its config with no user action.
+    private var isConfiguringEditor = false
     private var previousBalance: Double?
     private var refreshTimer: Timer?
     private var isRefreshing = false
@@ -466,15 +473,20 @@ final class AppState: ObservableObject {
 
     // MARK: - Model editor
 
-    /// Editor state for the separate harness window. It lives here rather than
-    /// as `@State` in a view so the window can be retargeted to another harness
-    /// without rebuilding its content view.
+    /// Editor state for the Agent Harnesses detail pane. It lives here rather
+    /// than as `@State` in a view so the pane can be retargeted to another
+    /// harness without rebuilding its content view.
     @Published var editAdapterID: String?
     @Published var editProvider = "" {
+        // A provider change is a pair change: `selectProvider` writes it once the
+        // model has been re-seeded, so a bare provider edit does not save here.
         didSet { refreshEditEndpoints() }
     }
     @Published var editModel = "" {
-        didSet { refreshEditEndpoints() }
+        didSet {
+            refreshEditEndpoints()
+            saveEditedModel()
+        }
     }
     @Published var editProviders: [String] = []
     @Published var editModels: [(id: String, name: String)] = []
@@ -484,23 +496,35 @@ final class AppState: ObservableObject {
     @Published var editEndpoints: [EndpointInfo] = []
 
     func beginEdit(_ row: ToolRow) {
+        // Seeding the fields must not look like a user edit.
+        isConfiguringEditor = true
+        defer { isConfiguringEditor = false }
+
         editAdapterID = row.id
         let current: ToolModelRef?
         if case .configured(let ref) = row.state { current = ref } else { current = nil }
+        lastEditRef = current
         editProviders = providers(forAdapterID: row.id, current: current?.provider)
         editProvider = current?.provider ?? editProviders.first ?? ""
         editModels = models(forAdapterID: row.id, provider: editProvider)
         editModel = current?.model ?? editModels.first?.id ?? ""
     }
 
-    func loadModels(for adapterID: String, provider: String, reset: Bool) {
+    /// Selects a provider and the model it will use, then saves the pair once.
+    /// The intermediate field assignments happen under `isConfiguringEditor` so
+    /// the model change does not fire a second, torn save; one save of the final
+    /// pair follows. Saving is synchronous, so nothing is lost to a debounce when
+    /// the user switches harness or leaves immediately.
+    func selectProvider(_ provider: String, for adapterID: String) {
+        isConfiguringEditor = true
+        editProvider = provider
         editModels = models(forAdapterID: adapterID, provider: provider)
-        if reset || !editModels.contains(where: { $0.id == editModel }) {
+        if !editModels.contains(where: { $0.id == editModel }) {
             editModel = editModels.first?.id ?? ""
         }
-        // A same-value assignment does not fire `editModel`'s `didSet`, so a
-        // provider switch that keeps the model id must refresh explicitly.
+        isConfiguringEditor = false
         refreshEditEndpoints()
+        saveEditedModel()
     }
 
     /// Loads the OpenRouter endpoint facts for the current editor selection.
@@ -543,16 +567,22 @@ final class AppState: ObservableObject {
         }
     }
 
-    func commitEdit() {
-        guard let adapterID = editAdapterID else { return }
-        setModel(ToolModelRef(provider: editProvider, model: editModel), for: adapterID)
-        editAdapterID = nil
+    /// Writes the current provider/model to the harness. A no-op when the pair is
+    /// what the harness already has, so opening the editor never rewrites the
+    /// file, and an empty or partially seeded pair is never written.
+    private func saveEditedModel() {
+        guard !isConfiguringEditor, let adapterID = editAdapterID else { return }
+        let ref = ToolModelRef(provider: editProvider, model: editModel)
+        guard !ref.provider.isEmpty, !ref.model.isEmpty, ref != lastEditRef else { return }
+        lastEditRef = ref
+        setModel(ref, for: adapterID)
     }
 
-    /// Cancel: drop the edit target without writing. Mirrors the old inline
-    /// editor's Cancel, which cleared `editingRowID` and changed nothing.
-    func cancelEdit() {
+    /// Leaves the editor. Changes are saved as they are made, so this only clears
+    /// the selection — it never writes (or discards) anything itself.
+    func closeEdit() {
         editAdapterID = nil
+        lastEditRef = nil
     }
 
     // MARK: - API key
@@ -902,9 +932,16 @@ struct ModelEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: row.symbol)
-                Text(row.displayName).font(.headline)
+            HStack(spacing: 8) {
+                Button { state.closeEdit() } label: {
+                    Label("Harnesses", systemImage: "chevron.left")
+                }
+                .buttonStyle(.link)
+                Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: row.symbol)
+                    Text(row.displayName).font(.headline)
+                }
             }
             providerControl
             // Searchable select: the dropdown filters as you type, and text that
@@ -919,12 +956,11 @@ struct ModelEditorView: View {
             if state.editProvider == "openrouter" && !state.editModel.isEmpty {
                 openRouterProviders
             }
-            HStack {
-                Button("Cancel") { state.cancelEdit() }
-                Spacer()
-                Button("Set") { state.commitEdit() }
-                    .disabled(state.editProvider.isEmpty || state.editModel.isEmpty)
+            if let error = state.toolErrorText {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
+            Text("Changes are saved automatically.")
+                .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(16)
         // Fill the pane: the provider Table takes the remaining height and
@@ -962,10 +998,7 @@ struct ModelEditorView: View {
                 Text("Provider").frame(width: 64, alignment: .leading)
                 Picker("", selection: Binding(
                     get: { state.editProvider },
-                    set: { newValue in
-                        state.editProvider = newValue
-                        state.loadModels(for: row.id, provider: newValue, reset: true)
-                    })) {
+                    set: { newValue in state.selectProvider(newValue, for: row.id) })) {
                     ForEach(providerOptions, id: \.self) { Text($0).tag($0) }
                 }
                 .labelsHidden()
@@ -988,8 +1021,7 @@ struct ModelEditorView: View {
         let name = providerDraft.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
         if !state.editProviders.contains(name) { state.editProviders.append(name) }
-        state.editProvider = name
-        state.loadModels(for: row.id, provider: name, reset: true)
+        state.selectProvider(name, for: row.id)
         isAddingProvider = false
     }
 
@@ -1208,19 +1240,23 @@ struct SettingsView: View {
     /// the pane to the harness list.
     @ViewBuilder
     private var detail: some View {
-        if let row = editingRow {
-            // No outer ScrollView: the provider Table scrolls itself, and two
-            // nested scrollers is what folded the old Grid over itself.
-            ModelEditorView(state: state, row: row)
-        } else {
-            switch section ?? .general {
-            case .general: generalDetail
-            case .apiKey: apiKeyDetail
-            case .menuBar: menuBarDetail
-            case .harnesses: harnessesDetail
-            case .alerts: alertsDetail
-            case .about: aboutDetail
+        switch section ?? .general {
+        case .general: generalDetail
+        case .apiKey: apiKeyDetail
+        case .menuBar: menuBarDetail
+        case .harnesses:
+            // The editor replaces the list inside the Agent Harnesses pane, so
+            // the sidebar stays live and any other section can be selected while
+            // editing; its changes are already saved.
+            if let row = editingRow {
+                // No outer ScrollView: the provider Table scrolls itself, and
+                // two nested scrollers is what folded the old Grid over itself.
+                ModelEditorView(state: state, row: row)
+            } else {
+                harnessesDetail
             }
+        case .alerts: alertsDetail
+        case .about: aboutDetail
         }
     }
 
