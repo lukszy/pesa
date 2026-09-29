@@ -199,7 +199,9 @@ The file is plain JSON and contains no secrets.
 
 The settings UI is a standard macOS **Settings** window, opened from
 **Settings…** in the app menu (⌘,) or **Settings…** in the status item's
-right-click menu. There is no gear control in the popover header, so settings
+right-click menu. It is split like the system settings windows: a sidebar of
+sections (**General**, **API Key**, **Menu Bar**, **Agent Harnesses**,
+**Alerts**, **About**) on the left, one grouped-card detail pane on the right. There is no gear control in the popover header, so settings
 are reachable only from those two menus. The popover itself holds only the
 centred balance header, the refresh icon, the per-key usage line and its limit
 bar, and the detected-agent tiles.

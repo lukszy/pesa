@@ -1230,89 +1230,156 @@ enum HarnessWindow {
 /// status item's right-click `Settings…` item and the app menu's Settings…
 /// item. Quit intentionally lives on the status item's right-click menu now,
 /// not here.
+/// One item of the Settings sidebar. `Hashable` so `List(selection:)` can use it.
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case general, apiKey, menuBar, harnesses, alerts, about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .apiKey: return "API Key"
+        case .menuBar: return "Menu Bar"
+        case .harnesses: return "Agent Harnesses"
+        case .alerts: return "Alerts"
+        case .about: return "About"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .apiKey: return "key"
+        case .menuBar: return "menubar.rectangle"
+        case .harnesses: return "square.grid.2x2"
+        case .alerts: return "bell"
+        case .about: return "info.circle"
+        }
+    }
+}
+
+/// The settings window: a sidebar of sections on the left and one grouped-card
+/// detail pane on the right, matching the macOS settings-window layout.
 struct SettingsView: View {
     @ObservedObject var state: AppState
+    @State private var section: SettingsSection? = .general
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                apiKeySection
-                Divider()
-                refreshSection
-                Divider()
-                harnessesSection
-                Divider()
-                menuBarSection
-                Divider()
-                alertsSection
-                Divider()
-                launchAtLoginSection
+        HStack(spacing: 0) {
+            List(selection: $section) {
+                ForEach(SettingsSection.allCases) { item in
+                    Label(item.title, systemImage: item.symbol).tag(item)
+                }
             }
-            .padding(20)
+            .listStyle(.sidebar)
+            .frame(width: 195)
+            Divider()
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 420)
-        .frame(maxHeight: 560)
-        // Settings is now where a harness is added, so it must be able to run
-        // the detection pass itself instead of waiting for the popover to have
-        // been opened. Idempotent: the guard skips a pass that already ran.
+        .frame(minWidth: 720, minHeight: 520)
+        // Settings is where a harness is added, so it must run the detection
+        // pass itself instead of waiting for the popover to have been opened.
+        // Idempotent: the guard skips a pass that already ran.
         .task {
             if !state.hasCompletedDiscovery { await state.discoverProviders() }
         }
     }
 
-    private var apiKeySection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("API key").font(.headline)
-            HStack {
-                SecureField("OpenRouter API key", text: $state.apiKeyInput)
-                Button("Save") { state.saveKey() }
-                    .disabled(state.apiKeyInput.isEmpty)
-            }
-            HStack {
-                Button("Test key") { Task { await state.testKey() } }
-                Button("Clear") { state.clearKey() }
-                    .disabled(!state.hasKey)
-            }
-            Text(state.hasKey ? "A key is stored in the Keychain." : "No key stored yet.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("macOS asks once to allow Keychain access — choose Always Allow. A rebuild with an ad-hoc signature changes the app's identity and makes it ask again; run scripts/make-signing-identity.sh once to stop that.")
-                .font(.caption).foregroundStyle(.secondary)
-            if let status = state.keyStatus {
-                Text(status).font(.caption).foregroundStyle(.secondary)
+    @ViewBuilder
+    private var detail: some View {
+        switch section ?? .general {
+        case .general: generalDetail
+        case .apiKey: apiKeyDetail
+        case .menuBar: menuBarDetail
+        case .harnesses: harnessesDetail
+        case .alerts: alertsDetail
+        case .about: aboutDetail
+        }
+    }
+
+    /// A settings row with a title and an optional secondary line, so the
+    /// grouped card reads like the system ones rather than a bare toggle label.
+    private func settingToggle(_ title: String, subtitle: String? = nil,
+                               isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
 
-    private var refreshSection: some View {
-        HStack {
-            Text("Refresh every")
-            TextField("", value: $state.config.refreshMinutes, format: .number)
-                .frame(width: 50)
-            Text("minutes")
+    private var apiKeyDetail: some View {
+        Form {
+            Section {
+                SecureField("OpenRouter API key", text: $state.apiKeyInput)
+                HStack {
+                    Button("Save") { state.saveKey() }
+                        .disabled(state.apiKeyInput.isEmpty)
+                    Button("Test key") { Task { await state.testKey() } }
+                    Button("Clear") { state.clearKey() }
+                        .disabled(!state.hasKey)
+                }
+                Text(state.hasKey ? "A key is stored in the Keychain." : "No key stored yet.")
+                    .foregroundStyle(.secondary)
+                if let status = state.keyStatus {
+                    Text(status).foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("OpenRouter API key")
+            } footer: {
+                Text("macOS asks once to allow Keychain access — choose Always Allow. A rebuild with an ad-hoc signature changes the app's identity and makes it ask again; run scripts/make-signing-identity.sh once to stop that.")
+            }
         }
+        .formStyle(.grouped)
+    }
+
+    private var generalDetail: some View {
+        Form {
+            Section("Balance") {
+                TextField("Refresh every (minutes)", value: $state.config.refreshMinutes,
+                          format: .number)
+            }
+            Section("Startup") {
+                settingToggle("Launch at login",
+                              subtitle: "Start ProviderCostController when you log in.",
+                              isOn: Binding(get: { state.config.launchAtLogin },
+                                            set: { state.setLaunchAtLogin($0) }))
+                if let error = state.launchAtLoginError {
+                    Text(error).foregroundStyle(.red)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 
     /// The harness registry. Detection still finds every installed harness; this
     /// section is where the user opts one into the popover and reaches its
     /// editor. `SettingsView.body` owns the one discovery pass that populates
     /// `rows`, so opening Settings first still lets a harness be added.
-    private var harnessesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Agent harnesses").font(.headline)
-            if !state.hasCompletedDiscovery {
-                Text("Checking agents…")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if state.rows.isEmpty {
-                Text("No harnesses detected.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                ForEach(state.rows, id: \.id) { row in
-                    harnessRow(row)
+    private var harnessesDetail: some View {
+        Form {
+            Section {
+                if !state.hasCompletedDiscovery {
+                    Text("Checking agents…").foregroundStyle(.secondary)
+                } else if state.rows.isEmpty {
+                    Text("No harnesses detected.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(state.rows, id: \.id) { row in
+                        harnessRow(row)
+                    }
                 }
+            } header: {
+                Text("Detected harnesses")
+            } footer: {
+                Text("Added harnesses appear in the popover. Configure… opens the model editor.")
             }
-            Text("Added harnesses appear in the popover. Configure… opens the model editor.")
-                .font(.caption).foregroundStyle(.secondary)
         }
+        .formStyle(.grouped)
     }
 
     private func harnessRow(_ row: ToolRow) -> some View {
@@ -1357,41 +1424,58 @@ struct SettingsView: View {
             })
     }
 
-    private var menuBarSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Menu bar").font(.headline)
-            Toggle("Show balance", isOn: $state.config.showMoneyInMenuBar)
-            Toggle("Show icon", isOn: $state.config.showIconInMenuBar)
-            Toggle("Hide the price in the menu bar until hovered", isOn: $state.config.hidesAmountInMenuBar)
-            Text("The icon stays visible if both are cleared, so the menu bar item remains clickable.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var alertsSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Alerts").font(.headline)
-            Toggle("Notify when the balance falls below", isOn: Binding(
-                get: { state.config.notifyBelowEnabled },
-                set: { state.setAlertEnabled($0) }))
-            HStack {
-                Text("Threshold $")
-                TextField("", value: $state.config.notifyBelowAmount, format: .number)
-                    .frame(width: 70)
+    private var menuBarDetail: some View {
+        Form {
+            Section("Menu bar") {
+                settingToggle("Show balance", isOn: $state.config.showMoneyInMenuBar)
+                settingToggle("Show icon", isOn: $state.config.showIconInMenuBar)
+                settingToggle("Hide the price until hovered",
+                              subtitle: "Replaces the amount with ...$ and reveals the real figure while the pointer is on the icon.",
+                              isOn: $state.config.hidesAmountInMenuBar)
             }
-            Text("Notification permission: \(state.authorizationStatusText)")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var launchAtLoginSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle("Launch at login", isOn: Binding(
-                get: { state.config.launchAtLogin },
-                set: { state.setLaunchAtLogin($0) }))
-            if let error = state.launchAtLoginError {
-                Text(error).font(.caption).foregroundStyle(.red)
+            Section {
+                Text("The icon stays visible if both are cleared, so the menu bar item remains clickable.")
+                    .foregroundStyle(.secondary)
             }
         }
+        .formStyle(.grouped)
+    }
+
+    private var alertsDetail: some View {
+        Form {
+            Section("Low balance") {
+                settingToggle("Notify when the balance falls below",
+                              isOn: Binding(get: { state.config.notifyBelowEnabled },
+                                            set: { state.setAlertEnabled($0) }))
+                TextField("Threshold ($)", value: $state.config.notifyBelowAmount,
+                          format: .number)
+            }
+            Section {
+                Text("Notification permission: \(state.authorizationStatusText)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var aboutDetail: some View {
+        Form {
+            Section {
+                LabeledContent("Version", value: appVersion)
+                LabeledContent("Provider", value: "OpenRouter")
+            }
+            Section {
+                Button("Buy credits…") {
+                    if let url = URL(string: "https://openrouter.ai/settings/credits") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 }
