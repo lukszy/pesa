@@ -933,6 +933,9 @@ struct ModelEditorView: View {
     /// The provider table's current sort. Default provider-name ascending.
     @State private var sortColumn: ProviderSortColumn = .provider
     @State private var sortAscending = true
+    /// The allow-list's dropdown checklist (parallel to the table's per-row
+    /// checkboxes; both write the same `providerOnly` entry).
+    @State private var showAllowedList = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1038,12 +1041,57 @@ struct ModelEditorView: View {
     private var openRouterProviders: some View {
         if !state.editEndpoints.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Providers").font(.caption).bold()
+                HStack {
+                    Text("Providers").font(.caption).bold()
+                    Spacer()
+                    allowedMenu
+                }
                 providerTable
                 Text("Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// A dropdown checklist for the allow-list, alongside the table's per-row
+    /// checkboxes. Both read `checkedSlugs` and write through `allowedBinding`,
+    /// so they cannot disagree. "Allow all" removes the key, which is the
+    /// all-providers default (an empty stored list means all).
+    private var allowedMenu: some View {
+        Button {
+            showAllowedList = true
+        } label: {
+            HStack(spacing: 3) {
+                Text(allowedSummary).font(.caption)
+                Image(systemName: "chevron.down").font(.system(size: 8))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Choose which providers this model may use")
+        .popover(isPresented: $showAllowedList) {
+            VStack(alignment: .leading, spacing: 6) {
+                Button("Allow all providers") {
+                    state.config.providerOnly.removeValue(forKey: state.editModel)
+                }
+                .buttonStyle(.link)
+                .disabled(checkedSlugs.isSuperset(of: state.editEndpoints.map(\.providerSlug)))
+                Divider()
+                ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
+                    Toggle(endpoint.providerName, isOn: allowedBinding(for: endpoint.providerSlug))
+                        .toggleStyle(.checkbox)
+                }
+            }
+            .padding(10)
+            .frame(minWidth: 220)
+        }
+    }
+
+    private var allowedSummary: String {
+        let all = state.editEndpoints.map(\.providerSlug)
+        let checked = checkedSlugs
+        if checked.isSuperset(of: all) { return "Allowed: all" }
+        return "Allowed: \(checked.count)/\(all.count)"
     }
 
     /// The table's rows in the current column order.
