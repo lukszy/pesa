@@ -46,6 +46,21 @@ func formatLatency(_ p50: Double?) -> String? {
     return String(format: "%.0f ms", p50)
 }
 
+/// SwiftUI's `Table` has no row-hover effect, so a cell's hover moves the
+/// table's single selection to that row, which draws the native full-row
+/// highlight. Cells only ever set it; the table clears it when the pointer
+/// leaves, so moving between the cells of one row does not flicker.
+private struct HoverSelectRow: ViewModifier {
+    let id: String
+    let hovered: Binding<String?>
+
+    func body(content: Content) -> some View {
+        content.onHover { over in
+            if over { hovered.wrappedValue = id }
+        }
+    }
+}
+
 /// A harness row's one-line model text: `provider/model`, or `unset` when the
 /// harness has no model configured. Shared by the popover tile and the Settings
 /// harness row so the two cannot drift.
@@ -929,6 +944,9 @@ struct ModelEditorView: View {
     @State private var sortOrder: [KeyPathComparator<EndpointInfo>] = [
         KeyPathComparator(\EndpointInfo.providerName),
     ]
+    /// The hovered row's id, used as the table's selection so the pointer
+    /// highlights a row (see `HoverSelectRow`).
+    @State private var hoveredRow: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1051,7 +1069,7 @@ struct ModelEditorView: View {
     }
 
     private var providerTable: some View {
-        Table(displayedEndpoints, sortOrder: $sortOrder) {
+        Table(displayedEndpoints, selection: $hoveredRow, sortOrder: $sortOrder) {
             // Selection on the left, in the row it applies to. A checkbox is not
             // a value, so its column is deliberately unsortable.
             TableColumn("Allow") { endpoint in
@@ -1059,42 +1077,55 @@ struct ModelEditorView: View {
                     .labelsHidden()
                     .toggleStyle(.checkbox)
                     .help("Allow this provider for the model")
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             .width(52)
             TableColumn("Provider", value: \.providerName) { endpoint in
                 Text(endpoint.providerName).lineLimit(1)
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             .width(min: 120, ideal: 160)
             TableColumn("In/M", value: \.promptOrder) { endpoint in
                 Text(priceCell(endpoint.promptPricePerToken)).monospacedDigit()
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             TableColumn("Out/M", value: \.completionOrder) { endpoint in
                 Text(priceCell(endpoint.completionPricePerToken)).monospacedDigit()
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             TableColumn("Speed", value: \.speedOrder) { endpoint in
                 Text(speedCell(endpoint)).monospacedDigit()
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             TableColumn("ZDR", value: \.zdrOrder) { endpoint in
-                if endpoint.zdr {
-                    Text("ZDR")
-                        .font(.caption2)
-                        .padding(.horizontal, 4)
-                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.2)))
-                } else {
-                    Text("—")
+                Group {
+                    if endpoint.zdr {
+                        Text("ZDR")
+                            .font(.caption2)
+                            .padding(.horizontal, 4)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.2)))
+                    } else {
+                        Text("—")
+                    }
                 }
+                .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             .width(56)
             TableColumn("Quant", value: \.quantOrder) { endpoint in
                 Text(endpoint.quantization ?? "—").lineLimit(1)
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
             .width(min: 60, ideal: 72)
             TableColumn("Links") { endpoint in
                 providerLinks(endpoint)
+                    .modifier(HoverSelectRow(id: endpoint.id, hovered: $hoveredRow))
             }
         }
         // The Table scrolls itself; let it take the pane's remaining height.
         .frame(minHeight: 180, maxHeight: .infinity)
+        // Leaving the table clears the highlight; cells never clear it, so
+        // crossing between a row's cells keeps it lit.
+        .onHover { over in if !over { hoveredRow = nil } }
     }
 
     /// A missing price is an em dash, never `$0.00`.
