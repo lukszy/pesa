@@ -889,20 +889,18 @@ struct ModelEditorView: View {
     @ObservedObject var state: AppState
     let row: ToolRow
 
+    /// The "add a provider" empty-state flow. A fresh root view is built on each
+    /// open, so this never leaks between harnesses.
+    @State private var isAddingProvider = false
+    @State private var providerDraft = ""
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: row.symbol)
                 Text(row.displayName).font(.headline)
             }
-            Picker("Provider", selection: Binding(
-                get: { state.editProvider },
-                set: { newValue in
-                    state.editProvider = newValue
-                    state.loadModels(for: row.id, provider: newValue, reset: true)
-                })) {
-                ForEach(state.editProviders, id: \.self) { Text($0).tag($0) }
-            }
+            providerControl
             // Searchable select: the dropdown filters as you type, and text that
             // matches no catalog model is still accepted as a free-form id.
             SearchablePicker(options: modelOptions, selection: $state.editModel)
@@ -926,7 +924,68 @@ struct ModelEditorView: View {
             }
         }
         .padding(16)
-        .frame(width: 380)
+        .frame(width: 560)
+    }
+
+    // MARK: Provider selection
+
+    /// Provider control. With providers configured it is a picker over them;
+    /// with none it shows an explicit empty state whose Add button reveals a
+    /// free-text field, so a harness with no configured provider is usable.
+    @ViewBuilder
+    private var providerControl: some View {
+        if state.editProviders.isEmpty && state.editProvider.isEmpty && !isAddingProvider {
+            HStack {
+                Text("Provider")
+                Spacer()
+                Button("Add provider…") {
+                    providerDraft = ""
+                    isAddingProvider = true
+                }
+            }
+        } else if isAddingProvider {
+            HStack {
+                TextField("provider name", text: $providerDraft)
+                    .frame(minWidth: 260)
+                    .onSubmit(addProvider)
+                Button("Add", action: addProvider)
+                    .disabled(providerDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Cancel") { isAddingProvider = false }
+            }
+        } else {
+            HStack {
+                Text("Provider").frame(width: 64, alignment: .leading)
+                Picker("", selection: Binding(
+                    get: { state.editProvider },
+                    set: { newValue in
+                        state.editProvider = newValue
+                        state.loadModels(for: row.id, provider: newValue, reset: true)
+                    })) {
+                    ForEach(providerOptions, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+            }
+        }
+    }
+
+    /// The picker's values: the detected providers plus the one currently set,
+    /// so a configured provider that detection did not list stays visible.
+    private var providerOptions: [String] {
+        guard !state.editProvider.isEmpty,
+              !state.editProviders.contains(state.editProvider) else { return state.editProviders }
+        return [state.editProvider] + state.editProviders
+    }
+
+    /// Adds the typed provider to the session list, selects it, and loads its
+    /// models. Nothing reaches the harness until Set, so a typo is just a wrong
+    /// selection to correct.
+    private func addProvider() {
+        let name = providerDraft.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if !state.editProviders.contains(name) { state.editProviders.append(name) }
+        state.editProvider = name
+        state.loadModels(for: row.id, provider: name, reset: true)
+        isAddingProvider = false
     }
 
     // MARK: OpenRouter provider routing
@@ -939,16 +998,9 @@ struct ModelEditorView: View {
     private var openRouterProviders: some View {
         if !state.editEndpoints.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
+                Text("Providers").font(.caption).bold()
                 providerTable
-                Text("Allowed providers")
-                    .font(.caption).bold()
-                ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
-                    Toggle(isOn: allowedBinding(for: endpoint.providerSlug)) {
-                        Text(endpoint.providerName)
-                    }
-                    .toggleStyle(.checkbox)
-                }
-                Text("OpenRouter provider routing for this model, recorded by this app.")
+                Text("Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -957,6 +1009,7 @@ struct ModelEditorView: View {
     private var providerTable: some View {
         Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
             GridRow {
+                Text("Allow").font(.caption).bold()
                 Text("Provider").font(.caption).bold()
                 Text("In/M").font(.caption).bold()
                 Text("Out/M").font(.caption).bold()
@@ -967,6 +1020,11 @@ struct ModelEditorView: View {
             }
             ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
                 GridRow {
+                    // Selection on the left, in the row it applies to.
+                    Toggle("", isOn: allowedBinding(for: endpoint.providerSlug))
+                        .labelsHidden()
+                        .toggleStyle(.checkbox)
+                        .help("Allow this provider for the model")
                     Text(endpoint.providerName).font(.caption)
                     Text(priceCell(endpoint.promptPricePerToken)).font(.caption)
                     Text(priceCell(endpoint.completionPricePerToken)).font(.caption)
@@ -1075,7 +1133,7 @@ enum HarnessWindow {
 
     private static func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 520),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false)
@@ -1083,7 +1141,7 @@ enum HarnessWindow {
         // Resizable so a taller editor is not clipped. The default is above the
         // floor so the editor's optional model-detail and read-only lines fit on
         // first open; this is the minimum the user can resize down to.
-        window.contentMinSize = NSSize(width: 420, height: 240)
+        window.contentMinSize = NSSize(width: 560, height: 300)
         window.center()
         return window
     }

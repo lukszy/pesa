@@ -115,7 +115,7 @@ struct SearchablePicker: View {
                 .font(.caption2).foregroundStyle(.secondary)
                 .padding(6)
         }
-        .frame(width: 320)
+        .frame(width: 360)
         .onAppear { searchFocused = true }
     }
 
