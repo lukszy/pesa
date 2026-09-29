@@ -34,6 +34,7 @@ enum SelfTest {
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
         checkEndpointsAndFormatting()
+        checkProviderSorting()
         checkSearchablePicker()
         checkSettings()
         checkHarnessTiles()
@@ -756,6 +757,37 @@ enum SelfTest {
     /// non-throwing autoclosure. Never touches a real user path: every settings
     /// write goes to the staged temp root, and `AppConfig.path` is only ever
     /// compared against, never opened.
+    /// Pins the provider table's sort rule, above all that a row missing the
+    /// sorted datum stays last in **both** directions (a missing price is not a
+    /// zero, so it must not jump to the top when the order flips).
+    private static func checkProviderSorting() {
+        func endpoint(_ name: String, prompt: Double?, speed: Double?,
+                      zdr: Bool = false) -> EndpointInfo {
+            EndpointInfo(providerSlug: name.lowercased(), providerName: name,
+                         promptPricePerToken: prompt, completionPricePerToken: nil,
+                         throughputP50: speed, latencyP50: nil, contextLength: nil,
+                         quantization: nil, zdr: zdr, privacyPolicyURL: nil,
+                         termsOfServiceURL: nil)
+        }
+        let rows = [endpoint("Beta", prompt: 3, speed: 10),
+                    endpoint("Alpha", prompt: nil, speed: 5, zdr: true),
+                    endpoint("Gamma", prompt: 1, speed: nil)]
+
+        func names(_ column: ProviderSortColumn, _ ascending: Bool) -> [String] {
+            sortedEndpoints(rows, by: column, ascending: ascending).map(\.providerName)
+        }
+        check("provider sort is name-ascending", names(.provider, true) == ["Alpha", "Beta", "Gamma"])
+        check("provider sort flips to name-descending", names(.provider, false) == ["Gamma", "Beta", "Alpha"])
+        check("price sort ascending puts the missing price last",
+              names(.prompt, true) == ["Gamma", "Beta", "Alpha"])
+        check("price sort descending still puts the missing price last",
+              names(.prompt, false) == ["Beta", "Gamma", "Alpha"])
+        check("speed sort ascending puts the missing throughput last",
+              names(.speed, true) == ["Alpha", "Beta", "Gamma"])
+        check("zdr sort ascending puts zero-retention endpoints first",
+              names(.zdr, true).first == "Alpha")
+    }
+
     /// Pins the searchable picker's commit rule: a typed name or id resolves to
     /// the option's id, and anything else is kept verbatim as a free-form id (the
     /// locally-configured-model case). Pure, so it runs without a popover.

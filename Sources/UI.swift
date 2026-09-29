@@ -46,6 +46,43 @@ func formatLatency(_ p50: Double?) -> String? {
     return String(format: "%.0f ms", p50)
 }
 
+/// A sortable column of the editor's provider table. `allow` is a checkbox, not
+/// a column you sort by, so it is deliberately absent.
+enum ProviderSortColumn: Equatable {
+    case provider, prompt, completion, speed, zdr, quant
+}
+
+/// Orders endpoint rows by a column. A row missing the sorted datum always
+/// sorts **last**, in both directions: a missing price or throughput is not a
+/// zero, so it must not jump to the top when the order is reversed. Pure, so the
+/// ordering rule is checked without rendering the table.
+func sortedEndpoints(_ endpoints: [EndpointInfo], by column: ProviderSortColumn,
+                     ascending: Bool) -> [EndpointInfo] {
+    func order<T: Comparable>(_ a: T?, _ b: T?) -> Bool {
+        switch (a, b) {
+        case let (x?, y?): return ascending ? x < y : x > y
+        case (nil, _?): return false   // a missing datum stays after a present one
+        case (_?, nil): return true
+        case (nil, nil): return false
+        }
+    }
+    return endpoints.sorted { a, b in
+        switch column {
+        case .provider:
+            let result = a.providerName.localizedCaseInsensitiveCompare(b.providerName)
+            if result == .orderedSame { return false }
+            return ascending ? result == .orderedAscending : result == .orderedDescending
+        case .prompt: return order(a.promptPricePerToken, b.promptPricePerToken)
+        case .completion: return order(a.completionPricePerToken, b.completionPricePerToken)
+        case .speed: return order(a.throughputP50, b.throughputP50)
+        // ZDR endpoints first when ascending: a deliberate policy flag, not a
+        // missing value, so true sorts as the smaller side.
+        case .zdr: return order(a.zdr ? 0 : 1, b.zdr ? 0 : 1)
+        case .quant: return order(a.quantization, b.quantization)
+        }
+    }
+}
+
 /// A harness row's one-line model text: `provider/model`, or `unset` when the
 /// harness has no model configured. Shared by the popover tile and the Settings
 /// harness row so the two cannot drift.
@@ -893,6 +930,9 @@ struct ModelEditorView: View {
     /// open, so this never leaks between harnesses.
     @State private var isAddingProvider = false
     @State private var providerDraft = ""
+    /// The provider table's current sort. Default provider-name ascending.
+    @State private var sortColumn: ProviderSortColumn = .provider
+    @State private var sortAscending = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1006,19 +1046,48 @@ struct ModelEditorView: View {
         }
     }
 
+    /// The table's rows in the current column order.
+    private var displayedEndpoints: [EndpointInfo] {
+        sortedEndpoints(state.editEndpoints, by: sortColumn, ascending: sortAscending)
+    }
+
+    /// A clickable column header: the first click sorts ascending, clicking the
+    /// active column flips direction, and the arrow shows which column is active.
+    private func sortHeader(_ title: String, _ column: ProviderSortColumn) -> some View {
+        Button {
+            if sortColumn == column {
+                sortAscending.toggle()
+            } else {
+                sortColumn = column
+                sortAscending = true
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text(title).font(.caption).bold()
+                if sortColumn == column {
+                    Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Sort by \(title)")
+    }
+
     private var providerTable: some View {
         Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
             GridRow {
                 Text("Allow").font(.caption).bold()
-                Text("Provider").font(.caption).bold()
-                Text("In/M").font(.caption).bold()
-                Text("Out/M").font(.caption).bold()
-                Text("Speed").font(.caption).bold()
-                Text("ZDR").font(.caption).bold()
-                Text("Quant").font(.caption).bold()
+                sortHeader("Provider", .provider)
+                sortHeader("In/M", .prompt)
+                sortHeader("Out/M", .completion)
+                sortHeader("Speed", .speed)
+                sortHeader("ZDR", .zdr)
+                sortHeader("Quant", .quant)
                 Text("Links").font(.caption).bold()
             }
-            ForEach(state.editEndpoints, id: \.providerSlug) { endpoint in
+            ForEach(displayedEndpoints, id: \.providerSlug) { endpoint in
                 GridRow {
                     // Selection on the left, in the row it applies to.
                     Toggle("", isOn: allowedBinding(for: endpoint.providerSlug))
