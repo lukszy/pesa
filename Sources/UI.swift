@@ -46,43 +46,6 @@ func formatLatency(_ p50: Double?) -> String? {
     return String(format: "%.0f ms", p50)
 }
 
-/// A sortable column of the editor's provider table. `allow` is a checkbox, not
-/// a column you sort by, so it is deliberately absent.
-enum ProviderSortColumn: Equatable {
-    case provider, prompt, completion, speed, zdr, quant
-}
-
-/// Orders endpoint rows by a column. A row missing the sorted datum always
-/// sorts **last**, in both directions: a missing price or throughput is not a
-/// zero, so it must not jump to the top when the order is reversed. Pure, so the
-/// ordering rule is checked without rendering the table.
-func sortedEndpoints(_ endpoints: [EndpointInfo], by column: ProviderSortColumn,
-                     ascending: Bool) -> [EndpointInfo] {
-    func order<T: Comparable>(_ a: T?, _ b: T?) -> Bool {
-        switch (a, b) {
-        case let (x?, y?): return ascending ? x < y : x > y
-        case (nil, _?): return false   // a missing datum stays after a present one
-        case (_?, nil): return true
-        case (nil, nil): return false
-        }
-    }
-    return endpoints.sorted { a, b in
-        switch column {
-        case .provider:
-            let result = a.providerName.localizedCaseInsensitiveCompare(b.providerName)
-            if result == .orderedSame { return false }
-            return ascending ? result == .orderedAscending : result == .orderedDescending
-        case .prompt: return order(a.promptPricePerToken, b.promptPricePerToken)
-        case .completion: return order(a.completionPricePerToken, b.completionPricePerToken)
-        case .speed: return order(a.throughputP50, b.throughputP50)
-        // ZDR endpoints first when ascending: a deliberate policy flag, not a
-        // missing value, so true sorts as the smaller side.
-        case .zdr: return order(a.zdr ? 0 : 1, b.zdr ? 0 : 1)
-        case .quant: return order(a.quantization, b.quantization)
-        }
-    }
-}
-
 /// A harness row's one-line model text: `provider/model`, or `unset` when the
 /// harness has no model configured. Shared by the popover tile and the Settings
 /// harness row so the two cannot drift.
@@ -931,9 +894,11 @@ struct ModelEditorView: View {
     /// open, so this never leaks between harnesses.
     @State private var isAddingProvider = false
     @State private var providerDraft = ""
-    /// The provider table's current sort. Default provider-name ascending.
-    @State private var sortColumn: ProviderSortColumn = .provider
-    @State private var sortAscending = true
+    /// The provider table's sort, driven by SwiftUI's `Table` column headers.
+    /// Default provider-name ascending.
+    @State private var sortOrder: [KeyPathComparator<EndpointInfo>] = [
+        KeyPathComparator(\EndpointInfo.providerName),
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -962,9 +927,9 @@ struct ModelEditorView: View {
             }
         }
         .padding(16)
-        // Fill the harness window rather than sitting at a fixed 560, so the
-        // provider table uses whatever width the user gives the window.
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fill the pane: the provider Table takes the remaining height and
+        // scrolls itself, so the content must be allowed to grow vertically.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     // MARK: Provider selection
@@ -1046,71 +1011,58 @@ struct ModelEditorView: View {
         }
     }
 
-    /// The table's rows in the current column order.
+    /// The endpoint rows, ordered by the `Table`'s current sort order. SwiftUI's
+    /// `Table` reflects the order in its headers but leaves re-ordering to the
+    /// caller, so the sort happens here.
     private var displayedEndpoints: [EndpointInfo] {
-        sortedEndpoints(state.editEndpoints, by: sortColumn, ascending: sortAscending)
-    }
-
-    /// A clickable column header: the first click sorts ascending, clicking the
-    /// active column flips direction, and the arrow shows which column is active.
-    private func sortHeader(_ title: String, _ column: ProviderSortColumn) -> some View {
-        Button {
-            if sortColumn == column {
-                sortAscending.toggle()
-            } else {
-                sortColumn = column
-                sortAscending = true
-            }
-        } label: {
-            HStack(spacing: 2) {
-                Text(title).font(.caption).bold()
-                if sortColumn == column {
-                    Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("Sort by \(title)")
+        state.editEndpoints.sorted(using: sortOrder)
     }
 
     private var providerTable: some View {
-        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
-            GridRow {
-                Text("Allow").font(.caption).bold()
-                sortHeader("Provider", .provider)
-                sortHeader("In/M", .prompt)
-                sortHeader("Out/M", .completion)
-                sortHeader("Speed", .speed)
-                sortHeader("ZDR", .zdr)
-                sortHeader("Quant", .quant)
-                Text("Links").font(.caption).bold()
+        Table(displayedEndpoints, sortOrder: $sortOrder) {
+            // Selection on the left, in the row it applies to. A checkbox is not
+            // a value, so its column is deliberately unsortable.
+            TableColumn("Allow") { endpoint in
+                Toggle("", isOn: allowedBinding(for: endpoint.providerSlug))
+                    .labelsHidden()
+                    .toggleStyle(.checkbox)
+                    .help("Allow this provider for the model")
             }
-            ForEach(displayedEndpoints, id: \.providerSlug) { endpoint in
-                GridRow {
-                    // Selection on the left, in the row it applies to.
-                    Toggle("", isOn: allowedBinding(for: endpoint.providerSlug))
-                        .labelsHidden()
-                        .toggleStyle(.checkbox)
-                        .help("Allow this provider for the model")
-                    Text(endpoint.providerName).font(.caption)
-                    Text(priceCell(endpoint.promptPricePerToken)).font(.caption)
-                    Text(priceCell(endpoint.completionPricePerToken)).font(.caption)
-                    Text(speedCell(endpoint)).font(.caption)
-                    if endpoint.zdr {
-                        Text("ZDR").font(.caption2)
-                            .padding(.horizontal, 4)
-                            .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.2)))
-                    } else {
-                        Text("—").font(.caption)
-                    }
-                    Text(endpoint.quantization ?? "—").font(.caption)
-                    providerLinks(endpoint).font(.caption)
+            .width(52)
+            TableColumn("Provider", value: \.providerName) { endpoint in
+                Text(endpoint.providerName).lineLimit(1)
+            }
+            .width(min: 120, ideal: 160)
+            TableColumn("In/M", value: \.promptOrder) { endpoint in
+                Text(priceCell(endpoint.promptPricePerToken)).monospacedDigit()
+            }
+            TableColumn("Out/M", value: \.completionOrder) { endpoint in
+                Text(priceCell(endpoint.completionPricePerToken)).monospacedDigit()
+            }
+            TableColumn("Speed", value: \.speedOrder) { endpoint in
+                Text(speedCell(endpoint)).monospacedDigit()
+            }
+            TableColumn("ZDR", value: \.zdrOrder) { endpoint in
+                if endpoint.zdr {
+                    Text("ZDR")
+                        .font(.caption2)
+                        .padding(.horizontal, 4)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.2)))
+                } else {
+                    Text("—")
                 }
             }
+            .width(56)
+            TableColumn("Quant", value: \.quantOrder) { endpoint in
+                Text(endpoint.quantization ?? "—").lineLimit(1)
+            }
+            .width(min: 60, ideal: 72)
+            TableColumn("Links") { endpoint in
+                providerLinks(endpoint)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // The Table scrolls itself; let it take the pane's remaining height.
+        .frame(minHeight: 180, maxHeight: .infinity)
     }
 
     /// A missing price is an em dash, never `$0.00`.
@@ -1253,7 +1205,9 @@ struct SettingsView: View {
     @ViewBuilder
     private var detail: some View {
         if let row = editingRow {
-            ScrollView { ModelEditorView(state: state, row: row) }
+            // No outer ScrollView: the provider Table scrolls itself, and two
+            // nested scrollers is what folded the old Grid over itself.
+            ModelEditorView(state: state, row: row)
         } else {
             switch section ?? .general {
             case .general: generalDetail

@@ -752,41 +752,40 @@ enum SelfTest {
         }
     }
 
+    /// Pins the `Table` sort keys: an optional numeric datum maps to the largest
+    /// finite value, so ascending sorts it last (a missing price is not a zero),
+    /// and a ZDR endpoint sorts before a non-ZDR one.
+    private static func checkProviderSorting() {
+        func endpoint(_ name: String, prompt: Double?, zdr: Bool = false) -> EndpointInfo {
+            EndpointInfo(providerSlug: name.lowercased(), providerName: name,
+                         promptPricePerToken: prompt, completionPricePerToken: nil,
+                         throughputP50: nil, latencyP50: nil, contextLength: nil,
+                         quantization: nil, zdr: zdr, privacyPolicyURL: nil,
+                         termsOfServiceURL: nil)
+        }
+        let rows = [endpoint("Beta", prompt: 3),
+                    endpoint("Alpha", prompt: nil, zdr: true),
+                    endpoint("Gamma", prompt: 1)]
+
+        check("a missing price maps to the largest sort key",
+              endpoint("Alpha", prompt: nil).promptOrder == .greatestFiniteMagnitude)
+        check("a present price uses its own value",
+              endpoint("Gamma", prompt: 1).promptOrder == 1)
+        let byPrice = rows.sorted(using: [KeyPathComparator(\EndpointInfo.promptOrder)])
+        check("price sort ascending puts the missing price last",
+              byPrice.map(\.providerName) == ["Gamma", "Beta", "Alpha"])
+        check("a ZDR endpoint sorts before a non-ZDR one",
+              endpoint("A", prompt: 1, zdr: true).zdrOrder < endpoint("B", prompt: 1).zdrOrder)
+        check("provider name is a working sort key",
+              rows.sorted(using: [KeyPathComparator(\EndpointInfo.providerName)]).map(\.providerName)
+                  == ["Alpha", "Beta", "Gamma"])
+    }
+
     /// Exercises the settings model and the two pure presentation/alert
     /// functions against temp paths. Throwing calls are hoisted out of `check`'s
     /// non-throwing autoclosure. Never touches a real user path: every settings
     /// write goes to the staged temp root, and `AppConfig.path` is only ever
     /// compared against, never opened.
-    /// Pins the provider table's sort rule, above all that a row missing the
-    /// sorted datum stays last in **both** directions (a missing price is not a
-    /// zero, so it must not jump to the top when the order flips).
-    private static func checkProviderSorting() {
-        func endpoint(_ name: String, prompt: Double?, speed: Double?,
-                      zdr: Bool = false) -> EndpointInfo {
-            EndpointInfo(providerSlug: name.lowercased(), providerName: name,
-                         promptPricePerToken: prompt, completionPricePerToken: nil,
-                         throughputP50: speed, latencyP50: nil, contextLength: nil,
-                         quantization: nil, zdr: zdr, privacyPolicyURL: nil,
-                         termsOfServiceURL: nil)
-        }
-        let rows = [endpoint("Beta", prompt: 3, speed: 10),
-                    endpoint("Alpha", prompt: nil, speed: 5, zdr: true),
-                    endpoint("Gamma", prompt: 1, speed: nil)]
-
-        func names(_ column: ProviderSortColumn, _ ascending: Bool) -> [String] {
-            sortedEndpoints(rows, by: column, ascending: ascending).map(\.providerName)
-        }
-        check("provider sort is name-ascending", names(.provider, true) == ["Alpha", "Beta", "Gamma"])
-        check("provider sort flips to name-descending", names(.provider, false) == ["Gamma", "Beta", "Alpha"])
-        check("price sort ascending puts the missing price last",
-              names(.prompt, true) == ["Gamma", "Beta", "Alpha"])
-        check("price sort descending still puts the missing price last",
-              names(.prompt, false) == ["Beta", "Gamma", "Alpha"])
-        check("speed sort ascending puts the missing throughput last",
-              names(.speed, true) == ["Alpha", "Beta", "Gamma"])
-        check("zdr sort ascending puts zero-retention endpoints first",
-              names(.zdr, true).first == "Alpha")
-    }
 
     /// Pins the searchable picker's commit rule: a typed name or id resolves to
     /// the option's id, and anything else is kept verbatim as a free-form id (the

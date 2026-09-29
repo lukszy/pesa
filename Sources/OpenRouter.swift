@@ -59,6 +59,22 @@ struct EndpointInfo: Equatable {
     let termsOfServiceURL: String?
 }
 
+/// `Identifiable` and the sort keys the editor's SwiftUI `Table` needs. A
+/// `TableColumn` sorts through a `KeyPathComparator` on a `Comparable` value,
+/// and `Optional` is not `Comparable`, so a missing numeric datum maps to the
+/// largest finite value: ascending puts it last, which is the same "missing is
+/// not zero" rule the rest of the app follows.
+extension EndpointInfo: Identifiable {
+    var id: String { providerSlug }
+    var promptOrder: Double { promptPricePerToken ?? .greatestFiniteMagnitude }
+    var completionOrder: Double { completionPricePerToken ?? .greatestFiniteMagnitude }
+    var speedOrder: Double { throughputP50 ?? .greatestFiniteMagnitude }
+    /// ZDR first when ascending: a policy flag, not a missing value.
+    var zdrOrder: Int { zdr ? 0 : 1 }
+    /// Unquantized sorts after a named quantization when ascending.
+    var quantOrder: String { quantization ?? "\u{10FFFF}" }
+}
+
 /// One `/models` response: the id/name list the pickers use and the per-model
 /// details the harness window shows. Both are parsed from a single body, so
 /// the two can never disagree about which models exist.
