@@ -1,12 +1,59 @@
-# Pesa
+<div align="center">
+  <img src="Resources/logo.svg" alt="Pesa logo" width="128" height="128">
+  <h1>Pesa</h1>
+  <p><strong>OpenRouter balance and agent-model control, in the macOS menu bar.</strong></p>
+  <p>
+    <img alt="version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue">
+    <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-black">
+    <img alt="dependencies none" src="https://img.shields.io/badge/dependencies-none-brightgreen">
+    <img alt="license not specified" src="https://img.shields.io/badge/license-not%20specified-lightgrey">
+  </p>
+</div>
 
-A macOS menu bar app that shows your OpenRouter remaining balance and lets you
-read and change the model configured in the coding agents installed on your
-machine — clicking a harness's tile in the popover opens the Settings window at
-that harness's model editor.
+## What it is
 
-The app is a single `LSUIElement` process: no Dock icon, no persistent daemon,
-and no third-party dependencies.
+Pesa is a macOS menu bar app that shows your OpenRouter remaining balance and
+lets you read and change the model configured in the coding agents installed on
+your machine — clicking a harness's tile in the popover opens the Settings
+window at that harness's model editor.
+
+It is a single `LSUIElement` process: no Dock icon, no persistent daemon, and
+no third-party dependencies.
+
+## Features
+
+- **Live OpenRouter balance** in the menu bar and as the popover's headline
+  figure, refreshed at launch, on a configurable timer, and on demand.
+- **Per-key usage tiles** — today, week, and month spend on the stored key,
+  plus key limit, BYOK, expiry, and free-tier state when those apply.
+- **Opt-in agent harnesses** — pi, opencode, and hermes are detected, but only
+  the ones you add appear in the popover.
+- **Model editing** — a searchable picker (or free text) writes the chosen
+  provider/model back to that harness's own config, with an automatic `.bak`.
+- **OpenRouter provider routing** — a live per-provider table (price, speed,
+  ZDR, quantization, privacy links) and a recorded per-model allow-list.
+- **Low-balance alert** — opt-in local notification on a crossing below your
+  threshold, never on a state.
+- **No third-party dependencies** — built directly with `swiftc`.
+
+## Install
+
+Requires **macOS 13 or later** and the **Xcode Command Line Tools**
+(`xcode-select --install`). There is no Homebrew formula or signed release yet,
+so build from source:
+
+```sh
+./scripts/build.sh        # swiftc -> .build/Pesa (fast, no bundle)
+./scripts/build-app.sh    # build + assemble + sign Pesa.app
+open Pesa.app
+```
+
+`build-app.sh` signs with a stable self-signed identity when one exists and
+falls back to an ad-hoc signature otherwise. For launch-at-login and a Keychain
+identity that survives rebuilds, create the identity once — see
+[Stable signing identity](#stable-signing-identity).
+
+## How it works
 
 - **Balance** — remaining credit (`total_credits − total_usage`) from
   OpenRouter's `GET /api/v1/credits`, rendered in the menu bar and as the large
@@ -279,3 +326,7 @@ on a state would notify all day.
 
 Also deferred: local agent ledgers (pi/opencode session logs).
 No placeholder code exists for any deferred item.
+
+## License
+
+Not yet specified.

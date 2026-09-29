@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swiftc --version
+
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Test (assert-based selftest)
+        run: ./.build/Pesa --selftest
+
+      - name: Assemble app bundle
+        run: ./scripts/build-app.sh

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Pesa">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#FBCFE8"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+    <linearGradient id="limb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F472B6"/>
+      <stop offset="1" stop-color="#DB2777"/>
+    </linearGradient>
+    <linearGradient id="glyph" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A855F7"/>
+      <stop offset="1" stop-color="#6D28D9"/>
+    </linearGradient>
+    <linearGradient id="tail" gradientUnits="userSpaceOnUse" x1="188" y1="116" x2="212" y2="150">
+      <stop offset="0" stop-color="#F472B6"/>
+      <stop offset="1" stop-color="#DB2777"/>
+    </linearGradient>
+    <!-- everything above the slot line stays visible; below it is inside the pig -->
+    <clipPath id="aboveSlot"><rect x="0" y="0" width="256" height="112"/></clipPath>
+  </defs>
+
+  <!-- soft ground shadow -->
+  <ellipse cx="128" cy="238" rx="66" ry="9" fill="#831843" fill-opacity="0.12"/>
+
+  <!-- body -->
+  <ellipse cx="128" cy="158" rx="72" ry="58" fill="url(#body)"/>
+  <ellipse cx="104" cy="126" rx="34" ry="21" fill="#FFFFFF" fill-opacity="0.22" transform="rotate(-18 104 126)"/>
+
+  <!-- tail -->
+  <path d="M196 142 c18 -2 22 -18 8 -24 c-9 -4 -16 5 -9 11"
+        fill="none" stroke="url(#tail)" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- snout -->
+  <ellipse cx="62" cy="164" rx="22" ry="17" fill="url(#limb)"/>
+  <circle cx="56" cy="162" r="3.5" fill="#9D174D"/>
+  <circle cx="68" cy="162" r="3.5" fill="#9D174D"/>
+
+  <!-- eye -->
+  <circle cx="98" cy="140" r="5" fill="#831843"/>
+
+  <!-- legs -->
+  <rect x="94" y="206" width="24" height="26" rx="10" fill="url(#limb)"/>
+  <rect x="140" y="206" width="24" height="26" rx="10" fill="url(#limb)"/>
+
+  <!-- OpenRouter glyph, halfway into the slot -->
+  <g clip-path="url(#aboveSlot)">
+    <g transform="translate(97 89.3) scale(0.1545)">
+      <path fill="url(#glyph)" d="M303.9475,17.19926c42.79734,0,77.48933,34.69327,77.48933,77.48933s-34.69199,77.48933-77.48933,77.48933l76.86166,76.86244c9.76367,9.76313,2.84903,26.45667-10.95697,26.45667h-220.88335c-71.32686,0-129.14889-57.82202-129.14889-129.14889S77.64197,17.19926,148.96884,17.19926h154.97866ZM148.96884,68.85881c-42.79607,0-77.48933,34.69327-77.48933,77.48933s34.69327,77.48933,77.48933,77.48933,77.48933-34.69327,77.48933-77.48933-34.69327-77.48933-77.48933-77.48933Z"/>
+    </g>
+  </g>
+
+  <!-- the slot: a simple line -->
+  <line x1="92" y1="112" x2="164" y2="112"
+        stroke="#831843" stroke-width="7" stroke-linecap="round"/>
+</svg>
