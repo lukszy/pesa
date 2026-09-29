@@ -1183,13 +1183,17 @@ struct SettingsView: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(minWidth: 720, minHeight: 520)
         // Settings is where a harness is added, so it must run the detection
         // pass itself instead of waiting for the popover to have been opened.
         // Idempotent: the guard skips a pass that already ran.
         .task {
             if !state.hasCompletedDiscovery { await state.discoverProviders() }
         }
+        // A minimum plus an unbounded maximum: the window is made resizable in
+        // `SettingsWindow.open`, and this lets the sidebar and detail pane fill
+        // whatever size the user drags.
+        .frame(minWidth: 720, idealWidth: 900, maxWidth: .infinity,
+               minHeight: 520, idealHeight: 640, maxHeight: .infinity)
         // The popover's tile and the harness list both start an edit; bring the
         // sidebar to the section whose pane shows the editor.
         .onAppear { if state.editAdapterID != nil { section = .harnesses } }
