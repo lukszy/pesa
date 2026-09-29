@@ -626,48 +626,53 @@ enum SelfTest {
         check("a real cap yields its remaining/total pair",
               capped.limitProgress?.remaining == 80 && capped.limitProgress?.total == 100)
 
-        // The popover's stat lines.
-        check("the usage line shows today, week and month",
-              formatKeyUsageLine(KeyUsage(usageDaily: 1.5, usageWeekly: 10.25, usageMonthly: 92.17))
-                  == "This key: Today $1.50 · Week $10.25 · Month $92.17")
-        check("the account spend line shows spent, purchased and the share",
-              formatAccountSpendLine(Credits(totalCredits: 100, totalUsage: 25.5))
-                  == "Account: spent $25.50 of $100.00 · 26%")
-        check("an account with no purchased credits has no spend line",
-              formatAccountSpendLine(Credits(totalCredits: 0, totalUsage: 5)) == nil)
-
+        // The popover's stat tiles.
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let day = 86_400.0
-        var badges = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1)
-        check("no extra key facts means no badge line", formatKeyBadges(badges, now: now) == nil)
-        badges.isFreeTier = true
-        badges.byokUsage = 3.5
-        badges.freeModelQuota = FreeModelQuota(used: 12, limit: 50, remaining: 38)
-        badges.expiresAt = now.addingTimeInterval(10 * day)
-        check("badges join tier, BYOK, free-model quota and expiry",
-              formatKeyBadges(badges, now: now)
-                  == "free tier · BYOK $3.50 · free models 12/50 today · expires in 10d")
-        badges.expiresAt = now.addingTimeInterval(-day)
-        check("an expired key says so",
-              formatKeyBadges(badges, now: now)?.contains("key expired") == true)
-        // The sub-day case: `dateComponents(.day)` truncates toward zero, so
-        // without the direct date comparison this would say "expires in 0d".
-        badges.expiresAt = now.addingTimeInterval(-3600)
-        check("a key expired this morning says expired, not 0d",
-              formatKeyBadges(badges, now: now)?.contains("key expired") == true)
-        badges.expiresAt = now.addingTimeInterval(200 * day)
-        check("a key expiring far out shows no expiry badge",
-              formatKeyBadges(badges, now: now)?.contains("expires") == false)
+        let base = KeyUsage(usageDaily: 1.5, usageWeekly: 10.25, usageMonthly: 92.17)
 
-        var labelled = KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1)
-        labelled.label = "sk-or-v1-ab...cd"
-        labelled.usageTotal = 118.44
-        let tooltip = formatKeyUsageTooltip(labelled)
-        check("the usage tooltip carries the key label and all-time spend",
-              tooltip.contains("sk-or-v1-ab...cd") && tooltip.contains("$118.44"))
-        check("a bare usage tooltip has no all-time clause",
-              !formatKeyUsageTooltip(KeyUsage(usageDaily: 1, usageWeekly: 1, usageMonthly: 1))
-                  .contains("All time"))
+        let withAccount = widgetTiles(
+            credits: Credits(totalCredits: 100, totalUsage: 25.5), usage: base, now: now)
+        check("the base tiles are today, week, month and account spent",
+              withAccount.map(\.title) == ["Today", "Week", "Month", "Account spent"])
+        check("the usage tiles format their figures",
+              withAccount[0].value == "$1.50" && withAccount[1].value == "$10.25"
+                  && withAccount[2].value == "$92.17")
+        check("the account tile shows the share of purchased credits",
+              withAccount[3].value == "$25.50" && withAccount[3].caption == "26% of $100.00")
+
+        var full = base
+        full.isFreeTier = true
+        full.limit = 5
+        full.limitRemaining = 2.12
+        full.limitReset = "monthly"
+        full.byokUsage = 3.5
+        full.freeModelQuota = FreeModelQuota(used: 12, limit: 50, remaining: 38)
+        full.expiresAt = now.addingTimeInterval(10 * day)
+        let fullTiles = widgetTiles(credits: nil, usage: full, now: now)
+        check("optional tiles appear only when their figure is present",
+              fullTiles.map(\.title)
+                  == ["Tier", "Today", "Week", "Month", "Key limit", "BYOK", "Free models", "Key"])
+        let limit = fullTiles.first { $0.title == "Key limit" }
+        check("the key-limit tile carries the cap, its reset and its bar",
+              limit?.value == "$2.12" && limit?.caption == "of $5.00 · resets monthly"
+                  && limit?.progressRemaining == 2.12 && limit?.progressTotal == 5)
+        check("the free-model tile shows used of limit",
+              fullTiles.first { $0.title == "Free models" }?.value == "12/50")
+
+        var expired = base
+        expired.expiresAt = now.addingTimeInterval(-3600)
+        check("a key expired this morning is an expired tile, not 0d",
+              widgetTiles(credits: nil, usage: expired, now: now).last?.value == "expired")
+        var far = base
+        far.expiresAt = now.addingTimeInterval(200 * day)
+        check("a key expiring far out has no expiry tile",
+              !widgetTiles(credits: nil, usage: far, now: now).contains { $0.title == "Key" })
+        check("no key and no credits means no tiles",
+              widgetTiles(credits: nil, usage: nil, now: now).isEmpty)
+        check("no purchased credits means no account tile",
+              !widgetTiles(credits: Credits(totalCredits: 0, totalUsage: 5), usage: base, now: now)
+                  .contains { $0.title == "Account spent" })
 
         do {
             let details = try OpenRouter.parseModelDetails(Data(

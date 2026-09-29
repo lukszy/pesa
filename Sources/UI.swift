@@ -69,52 +69,73 @@ func formatHarnessModel(_ state: ToolState) -> String {
     return "unset"
 }
 
-/// The per-key usage line: today, this week, this month, all from `/key`.
-func formatKeyUsageLine(_ usage: KeyUsage) -> String {
-    "This key: Today \(formatBalance(usage.usageDaily)) · Week \(formatBalance(usage.usageWeekly)) · Month \(formatBalance(usage.usageMonthly))"
+/// One stat card in the popover's grid below the balance. `progressRemaining`
+/// and `progressTotal` are set only on the key-limit card, which draws a thin
+/// bar; every other card leaves them nil.
+struct StatTile: Equatable {
+    let title: String
+    let value: String
+    var caption: String? = nil
+    var progressRemaining: Double? = nil
+    var progressTotal: Double? = nil
 }
 
-/// The account-wide spend line from `/credits`: spent of purchased credits, and
-/// the share. `nil` when the account purchased no credits, where the share is
-/// undefined.
-func formatAccountSpendLine(_ credits: Credits) -> String? {
-    guard credits.totalCredits > 0 else { return nil }
-    let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
-    return "Account: spent \(formatBalance(credits.totalUsage)) of \(formatBalance(credits.totalCredits)) · \(percent)%"
-}
-
-/// Extra per-key facts joined into one subdued line: free tier, BYOK spend,
-/// free-model quota, and expiry. `nil` when there is nothing to say. `now` is a
-/// parameter so the expiry rule is checkable without a clock.
-func formatKeyBadges(_ usage: KeyUsage, now: Date) -> String? {
-    var parts: [String] = []
-    if usage.isFreeTier == true { parts.append("free tier") }
-    if let byok = usage.byokUsage, byok > 0 { parts.append("BYOK \(formatBalance(byok))") }
-    if let quota = usage.freeModelQuota {
-        parts.append("free models \(quota.used)/\(quota.limit) today")
-    }
-    if let expires = usage.expiresAt {
-        // Compare the dates directly. `dateComponents(.day)` truncates toward
-        // zero, so an expiry an hour ago would yield 0 and fall through to
-        // "expires in 0d" instead of "key expired".
-        if expires <= now {
-            parts.append("key expired")
-        } else {
-            let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
-            if days <= 30 { parts.append("expires in \(days)d") }
+/// The popover's stat tiles, in display order. Every datum is optional at the
+/// source, so a tile appears only when its figure is present — never as a `0`.
+/// `now` is a parameter so the key-expiry tile is checkable without a clock.
+///
+/// Two families, and the titles keep them apart: the per-key tiles ("Today",
+/// "Week", "Month", "Key limit", "BYOK", "Free models", "Key") come from
+/// `/key`, and "Account spent" from `/credits`. With more than one key the per-
+/// key figures do not reconcile with the account-wide one.
+func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
+    var tiles: [StatTile] = []
+    if let usage {
+        if usage.isFreeTier == true {
+            tiles.append(StatTile(title: "Tier", value: "free"))
         }
+        tiles.append(StatTile(title: "Today", value: formatBalance(usage.usageDaily)))
+        tiles.append(StatTile(title: "Week", value: formatBalance(usage.usageWeekly)))
+        tiles.append(StatTile(title: "Month", value: formatBalance(usage.usageMonthly)))
+        if let progress = usage.limitProgress {
+            let reset = usage.limitReset.map { " · resets \($0)" } ?? ""
+            tiles.append(StatTile(
+                title: "Key limit",
+                value: formatBalance(progress.remaining),
+                caption: "of \(formatBalance(progress.total))\(reset)",
+                progressRemaining: progress.remaining,
+                progressTotal: progress.total))
+        }
+        if let byok = usage.byokUsage, byok > 0 {
+            tiles.append(StatTile(title: "BYOK", value: formatBalance(byok),
+                                  caption: "own provider keys"))
+        }
+        if let quota = usage.freeModelQuota {
+            tiles.append(StatTile(title: "Free models", value: "\(quota.used)/\(quota.limit)",
+                                  caption: "today"))
+        }
+        if let expiry = expiryTile(usage, now: now) { tiles.append(expiry) }
     }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    if let credits, credits.totalCredits > 0 {
+        let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
+        tiles.append(StatTile(
+            title: "Account spent",
+            value: formatBalance(credits.totalUsage),
+            caption: "\(percent)% of \(formatBalance(credits.totalCredits))"))
+    }
+    return tiles
 }
 
-/// The usage line's tooltip: which figure is which, plus the optional key label
-/// and all-time spend from `/key`. The line itself stays "This key" so a per-key
-/// figure is never mistaken for the account-wide one above it.
-func formatKeyUsageTooltip(_ usage: KeyUsage) -> String {
-    var text = "Usage for this API key, not the account. The balance above is account-wide."
-    if let label = usage.label { text += " Key: \(label)." }
-    if let total = usage.usageTotal { text += " All time \(formatBalance(total))." }
-    return text
+/// The key's expiry as a tile, but only when it is worth flagging: expired, or
+/// inside 30 days. `nil` otherwise, including when the key never expires.
+private func expiryTile(_ usage: KeyUsage, now: Date) -> StatTile? {
+    guard let expires = usage.expiresAt else { return nil }
+    // Direct date comparison: `dateComponents(.day)` truncates toward zero, so
+    // an expiry an hour ago would read as 0 and show "expires in 0d".
+    if expires <= now { return StatTile(title: "Key", value: "expired") }
+    let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
+    guard days <= 30 else { return nil }
+    return StatTile(title: "Key", value: "expires in \(days)d")
 }
 
 /// The harness window's one-line model summary, e.g.
@@ -917,34 +938,10 @@ struct PopoverView: View {
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
                 .padding(.top, 12)
                 .padding(.bottom, 12)
-            // Account-wide counterpart to the balance: the balance is what is
-            // left, this is what was spent of what was purchased.
-            if let credits = state.accountCredits,
-               let accountLine = formatAccountSpendLine(credits) {
-                Text(accountLine)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help("Account-wide: total spent of credits purchased. The balance above is what remains.")
-            }
-            // The lines below are for the one API key, not the account. The help
-            // text says so, because with more than one key the two figures do
-            // not reconcile.
-            if let usage = state.keyUsage {
-                Text(formatKeyUsageLine(usage))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help(formatKeyUsageTooltip(usage))
-                if let progress = usage.limitProgress {
-                    ProgressView(value: progress.remaining, total: progress.total)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 220)
-                    Text(limitLabel(progress, reset: usage.limitReset))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                if let badges = formatKeyBadges(usage, now: Date()) {
-                    Text(badges)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .help("Key tier, own-key (BYOK) spend, free-model quota and expiry.")
-                }
-            }
+            // The stats are tiles under the amount. Per-key tiles come from
+            // `/key` and the account tile from `/credits`; the titles keep them
+            // apart, because with more than one key the two do not reconcile.
+            statTiles
             if let updated = state.lastUpdated {
                 Text("Updated \(updated, style: .relative)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -970,10 +967,42 @@ struct PopoverView: View {
         return formatBalance(remaining)
     }
 
-    private func limitLabel(_ progress: (remaining: Double, total: Double), reset: String?) -> String {
-        var text = "\(formatBalance(progress.remaining)) of \(formatBalance(progress.total)) remaining"
-        if let reset { text += " · resets \(reset)" }
-        return text
+    /// The stat grid: two columns of small cards under the balance, one card per
+    /// present figure. Empty (no grid) when nothing is known yet.
+    @ViewBuilder
+    private var statTiles: some View {
+        let tiles = widgetTiles(credits: state.accountCredits, usage: state.keyUsage,
+                                now: Date())
+        if !tiles.isEmpty {
+            LazyVGrid(columns: [
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8),
+            ], spacing: 8) {
+                ForEach(tiles, id: \.title) { tile in
+                    statTile(tile)
+                }
+            }
+        }
+    }
+
+    private func statTile(_ tile: StatTile) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(tile.title).font(.caption2).foregroundStyle(.secondary)
+            Text(tile.value).font(.callout).bold()
+                .lineLimit(1).minimumScaleFactor(0.7)
+            if let caption = tile.caption {
+                Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            if let remaining = tile.progressRemaining,
+               let total = tile.progressTotal, total > 0 {
+                ProgressView(value: remaining, total: total)
+                    .progressViewStyle(.linear)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
     }
 
     // MARK: Tools
