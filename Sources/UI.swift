@@ -1282,19 +1282,25 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @ObservedObject var state: AppState
     @State private var section: SettingsSection? = .general
+    @State private var showSidebar = true
 
     var body: some View {
         HStack(spacing: 0) {
-            List(selection: $section) {
-                ForEach(SettingsSection.allCases) { item in
-                    Label(item.title, systemImage: item.symbol).tag(item)
+            if showSidebar {
+                List(selection: $section) {
+                    ForEach(SettingsSection.allCases) { item in
+                        Label(item.title, systemImage: item.symbol).tag(item)
+                    }
                 }
+                .listStyle(.sidebar)
+                .frame(width: 195)
+                Divider()
             }
-            .listStyle(.sidebar)
-            .frame(width: 195)
-            Divider()
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            VStack(spacing: 0) {
+                sidebarToggleBar
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
         // Settings is where a harness is added, so it must run the detection
         // pass itself instead of waiting for the popover to have been opened.
@@ -1319,6 +1325,23 @@ struct SettingsView: View {
     /// same Settings window, not a separate one — otherwise the sidebar's
     /// selected section. `Set` and `Cancel` clear the edit target, which returns
     /// the pane to the harness list.
+    /// The always-visible sidebar toggle. It sits on the detail side because the
+    /// button must stay reachable once the sidebar is hidden.
+    private var sidebarToggleBar: some View {
+        HStack {
+            Button {
+                showSidebar.toggle()
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .buttonStyle(.borderless)
+            .help(showSidebar ? "Hide the sidebar" : "Show the sidebar")
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+    }
+
     @ViewBuilder
     private var detail: some View {
         switch section ?? .general {
