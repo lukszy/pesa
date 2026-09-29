@@ -953,17 +953,19 @@ struct PopoverView: View {
             // hides it. The status item's text comes from MenuBarPresentation,
             // not from this view.
             Text(balanceText)
-                .font(.system(size: 34, weight: .semibold, design: .rounded))
-                .padding(.top, 12)
-                .padding(.bottom, 12)
-            // The stats are tiles under the amount. Per-key tiles come from
-            // `/key` and the account tile from `/credits`; the titles keep them
-            // apart, because with more than one key the two do not reconcile.
-            statTiles
+                .font(.system(size: 44, weight: .semibold, design: .rounded))
+                .padding(.top, 18)
+                .padding(.bottom, 18)
+            // How fresh the figures are, directly under the amount and above the
+            // tiles it describes.
             if let updated = state.lastUpdated {
                 Text("Updated \(updated, style: .relative)")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            // The stats are tiles under the amount. Per-key tiles come from
+            // `/key` and the account tile from `/credits`; the titles keep them
+            // apart, because with more than one key the two do not reconcile.
+            statTiles
             if let error = state.errorText {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
