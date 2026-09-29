@@ -4,10 +4,10 @@ Last run: 2026-09-28
 
 ## High Priority (loop is acting or waiting on human)
 
-- **Branch `feat/harness-registry-provider-details` is ready for review.**
-  Worktree: `/Users/l.szymanski/orca/projects/pcc-harness-registry`
-  (base commit `58d75a7`, change commits `b428add` + verifier-fix commit). Not
-  pushed, not merged. Awaiting human approval to merge.
+- **Merged to `master` on human approval** at merge commit `ec47ca6`
+  (`git merge --no-ff feat/harness-registry-provider-details`). The worktree was
+  removed and the merged branch deleted; `master` is clean and builds green.
+  **Not pushed** — the merge is local only.
 - **Rename + key storage (commit `43df5c7`):** the app/bundle/executable are
   now **Pesa** (bundle id `local.pesa`), settings and the model cache live in
   `~/.pesa-app`, and the OpenRouter key is a plain-text `apiKey` field in
