@@ -91,15 +91,19 @@ struct StatTile: Equatable {
 func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
     var tiles: [StatTile] = []
     if let usage {
+        // Narrow tiles first so they pack four to a row with BYOK in the first
+        // row; the two wide tiles follow and share the last row.
+        tiles.append(StatTile(title: "Today", value: formatBalance(usage.usageDaily)))
+        tiles.append(StatTile(title: "Week", value: formatBalance(usage.usageWeekly)))
+        tiles.append(StatTile(title: "Month", value: formatBalance(usage.usageMonthly)))
+        if let byok = usage.byokUsage, byok > 0 {
+            tiles.append(StatTile(title: "BYOK", value: formatBalance(byok),
+                                  caption: "own provider keys"))
+        }
         if usage.isFreeTier == true {
             tiles.append(StatTile(title: "Tier", value: "free"))
         }
-        // OpenRouter's day/week/month windows are **UTC** (daily resets at UTC
-        // midnight, weekly is Monday–Sunday UTC), so the titles say so rather
-        // than implying the user's local day.
-        tiles.append(StatTile(title: "Today (UTC)", value: formatBalance(usage.usageDaily)))
-        tiles.append(StatTile(title: "Week (UTC)", value: formatBalance(usage.usageWeekly)))
-        tiles.append(StatTile(title: "Month (UTC)", value: formatBalance(usage.usageMonthly)))
+        if let expiry = expiryTile(usage, now: now) { tiles.append(expiry) }
         if let progress = usage.limitProgress {
             let reset = usage.limitReset.map { " · resets \($0)" } ?? ""
             tiles.append(StatTile(
@@ -109,17 +113,8 @@ func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
                 progressRemaining: progress.remaining,
                 progressTotal: progress.total))
         }
-        // Account spent sits next to Key limit so the two half-width tiles share
-        // a row (see `statRows`).
-        tiles.append(contentsOf: accountTiles(credits))
-        if let byok = usage.byokUsage, byok > 0 {
-            tiles.append(StatTile(title: "BYOK", value: formatBalance(byok),
-                                  caption: "own provider keys"))
-        }
-        if let expiry = expiryTile(usage, now: now) { tiles.append(expiry) }
-    } else {
-        tiles.append(contentsOf: accountTiles(credits))
     }
+    tiles.append(contentsOf: accountTiles(credits))
     return tiles
 }
 
@@ -1002,7 +997,7 @@ struct PopoverView: View {
         .frame(width: 380)
         // Tall enough for the amount, the updated line and the tile grid without
         // scrolling; the scroll view is only a fallback for a short screen.
-        .frame(maxHeight: 720)
+        .frame(maxHeight: 860)
     }
 
     // MARK: Header

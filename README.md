@@ -21,10 +21,10 @@ and no third-party dependencies.
   limit** card is the exception: it spans the full width of its own row, because
   it carries the progress bar and a longer caption.
   The per-key cards come from OpenRouter's `GET /api/v1/key`:
-  - **Today (UTC)**, **Week (UTC)**, **Month (UTC)** — spend on the stored API
-    key (`usage_daily`/`usage_weekly`/`usage_monthly`). OpenRouter's windows are
-    **UTC** (daily resets at UTC midnight, weekly is Monday–Sunday UTC), so the
-    titles say so: a purchase at 01:00 CEST counts to the previous UTC day.
+  - **Today**, **Week**, **Month** — spend on the stored API key
+    (`usage_daily`/`usage_weekly`/`usage_monthly`). These are OpenRouter's own
+    per-key counters and follow OpenRouter's clock: daily resets at UTC
+    midnight, weekly is Monday–Sunday UTC.
   - **Key limit** — the key's spend cap: remaining of the cap, with a thin
     progress bar and the reset period (`limit_remaining`/`limit`/
     `limit_reset`). A key with no cap (`limit` null) shows no card.
