@@ -1381,21 +1381,28 @@ struct SettingsView: View {
                 // the field narrow, so the label is hidden and the field stands
                 // alone.
                 ZStack(alignment: .leading) {
+                    // `maxWidth: .infinity` makes the field the row's width and
+                    // anchors the ZStack, so the overlay below cannot stretch it.
                     SecureField("OpenRouter API key", text: $state.apiKeyInput, prompt: Text(
                         state.hasKey ? "" : "Paste your OpenRouter API key"))
                         .labelsHidden()
                         .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: .infinity)
                     // A stored key shows a shadowed mask that runs the full width
                     // of the field. The overlay takes no clicks, so the field
                     // stays editable underneath and the mask clears on typing.
                     if state.hasKey && state.apiKeyInput.isEmpty {
-                        // A full run, clipped at the field's edge rather than
-                        // truncated with an ellipsis.
+                        // A long run so it reaches the edge, `fixedSize` so it is
+                        // not shortened to "…", then bounded by an explicit frame
+                        // and clipped. Without that frame the run's own 400-dot
+                        // width would size (and over-stretch) the field.
                         Text(String(repeating: "•", count: 400))
                             .lineLimit(1)
-                            .fixedSize()
-                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: true, vertical: false)
                             .padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .clipped()
+                            .foregroundStyle(.secondary)
                             .allowsHitTesting(false)
                     }
                 }
