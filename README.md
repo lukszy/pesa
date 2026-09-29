@@ -188,11 +188,16 @@ Settings live in `~/.pesa-app/settings.json`:
 
 The file is plain JSON and contains no secrets.
 
-The settings UI is a standard macOS **Settings** window, opened from
+The settings UI is an app-owned `NSWindow` styled like a macOS **Settings**
+window, opened from
 **Settings…** in the app menu (⌘,) or **Settings…** in the status item's
 right-click menu. It is split like the system settings windows: a sidebar of
 sections (**General**, **API Key**, **Menu Bar**, **Agent Harnesses**,
-**Alerts**, **About**) on the left, one grouped-card detail pane on the right. There is no gear control in the popover header, so settings
+**Alerts**, **About**) on the left, one grouped-card detail pane on the right.
+It is **resizable**, with a `sidebar.left` item in its title bar that shows or
+hides the sidebar. (SwiftUI's `Settings` scene is deliberately not resizable and
+puts a SwiftUI toolbar outside the title bar, so the window is created and
+configured directly; the scene itself only supplies the `⌘,` menu slot.) There is no gear control in the popover header, so settings
 are reachable only from those two menus. The popover itself holds only the
 centred balance header, the refresh icon, the per-key usage line and its limit
 bar, and the detected-agent tiles.

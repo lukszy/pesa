@@ -115,12 +115,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the raw `.build/` binary out of the Dock; the bundled app is
         // already LSUIElement.
         NSApp.setActivationPolicy(.accessory)
-        // The app menu's own Settings… item (⌘,) opens the SwiftUI `Settings`
-        // scene directly, bypassing `SettingsWindow.open`, so prepare the window
-        // whenever it becomes key to keep it resizable on every open path.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(settingsWindowBecameKey(_:)),
-            name: NSWindow.didBecomeKeyNotification, object: nil)
         // The same instance the `Settings` scene observes; see `AppState.shared`.
         let state = AppState.shared
         self.state = state
@@ -166,11 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
-
-    @objc private func settingsWindowBecameKey(_ note: Notification) {
-        guard let window = note.object as? NSWindow else { return }
-        SettingsWindow.prepare(window)
-    }
 
     /// Pops an `NSMenu` from the status item. `statusItem.menu` is assigned only
     /// for the duration of the click and then cleared, so left-click keeps

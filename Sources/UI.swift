@@ -1302,10 +1302,6 @@ struct SettingsView: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        // The `Settings` scene ignores `.windowResizability` and separates a
-        // SwiftUI toolbar from the title bar, so the hosting NSWindow is
-        // configured directly instead (resizable + a real sidebar toolbar).
-        .background(SettingsWindowConfigurator())
         // Settings is where a harness is added, so it must run the detection
         // pass itself instead of waiting for the popover to have been opened.
         // Idempotent: the guard skips a pass that already ran.
