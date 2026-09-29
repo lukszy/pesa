@@ -4,10 +4,12 @@ Last run: 2026-09-28
 
 ## High Priority (loop is acting or waiting on human)
 
-- **Merged to `master` on human approval** at merge commit `ec47ca6`
-  (`git merge --no-ff feat/harness-registry-provider-details`). The worktree was
-  removed and the merged branch deleted; `master` is clean and builds green.
-  **Not pushed** — the merge is local only.
+- **Merged to `master` on human approval:**
+  - `ec47ca6` — `feat/harness-registry-provider-details` (worktree removed,
+    branch deleted).
+  - `044beb5` — `feat/widget-stats` (popover stat tiles; branch deleted).
+  `master` is clean and builds green (**194 PASS / 0 FAIL**). **Not pushed** —
+  the merges are local only.
 - **Rename + key storage (commit `43df5c7`):** the app/bundle/executable are
   now **Pesa** (bundle id `local.pesa`), settings and the model cache live in
   `~/.pesa-app`, and the OpenRouter key is a plain-text `apiKey` field in
@@ -23,7 +25,7 @@ Last run: 2026-09-28
 ## Verification evidence
 
 - `./scripts/build.sh` from a clean `.build`: exit 0.
-- `./.build/Pesa --selftest`: exit 0, **180 PASS / 0 FAIL** (clean
+- `./.build/Pesa --selftest`: exit 0, **194 PASS / 0 FAIL** (clean
   `rm -rf .build` first).
 - `grep -rni clawdbot Sources Tests README.md scripts`: no hits.
 - Live API key-match checked against `GET /endpoints/zdr` +
