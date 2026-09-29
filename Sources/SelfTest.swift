@@ -29,7 +29,6 @@ enum SelfTest {
         checkOpencodeAdapter()
         checkHermesAdapter()
         checkRegistry()
-        checkKeychain()
         checkUsableKey()
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
@@ -363,48 +362,14 @@ enum SelfTest {
         }
     }
 
-    /// Exercises the Keychain against the test-only `selftest` account, never
-    /// the `openrouter` account the app itself writes. `set` upserts, so a
-    /// leftover item from an interrupted run does not wedge the suite. The item
-    /// is deleted again when the checks finish. Throwing calls are hoisted out
-    /// of `check`'s non-throwing autoclosure.
-    private static func checkKeychain() {
-        var setFailed = false
-        do { try Keychain.set("test-value-not-a-real-key", account: "selftest") } catch { setFailed = true }
-        check("keychain set succeeds", !setFailed)
-        check("keychain round-trips", Keychain.get(account: "selftest") == "test-value-not-a-real-key")
-
-        // Setting twice must overwrite, not fail: SecItemAdd on an existing
-        // item returns errSecDuplicateItem. A plain add would fail here.
-        var reSetFailed = false
-        do { try Keychain.set("second-value-not-a-real-key", account: "selftest") } catch { reSetFailed = true }
-        check("keychain set overwrites an existing value",
-            !reSetFailed && Keychain.get(account: "selftest") == "second-value-not-a-real-key")
-
-        var deleteThrew = false
-        do { try Keychain.delete(account: "selftest") } catch { deleteThrew = true }
-        check("keychain delete succeeds", !deleteThrew)
-        check("keychain delete works", Keychain.get(account: "selftest") == nil)
-
-        // Removing a key that is already gone is a no-op, not an error —
-        // otherwise a second clear-key action would fail spuriously.
-        var absentDeleteThrew = false
-        do { try Keychain.delete(account: "selftest") } catch { absentDeleteThrew = true }
-        check("deleting an absent key does not throw", !absentDeleteThrew)
-
-        // Belt and braces: never leave the test account behind, even on failure.
-        do { try Keychain.delete(account: "selftest") }
-        catch { check("keychain cleanup failed: \(error)", false) }
-    }
-
     /// Pins the one "a key exists" rule against literals, offline. Three
     /// directions, each separately falsifiable: `key != nil` (forgets the
     /// emptiness guard) flips the empty check alone; `key == nil` flips the nil
     /// check; `return false` flips the real-key check alone.
     private static func checkUsableKey() {
-        check("a nil key is not usable", !Keychain.isUsableKey(nil))
-        check("an empty key is not usable", !Keychain.isUsableKey(""))
-        check("a non-empty key is usable", Keychain.isUsableKey("selftest-not-a-real-key"))
+        check("a nil key is not usable", !isUsableAPIKey(nil))
+        check("an empty key is not usable", !isUsableAPIKey(""))
+        check("a non-empty key is usable", isUsableAPIKey("selftest-not-a-real-key"))
     }
 
     /// Pins `HarnessTiles`: only an added, healthy harness is a tile, a
@@ -781,12 +746,6 @@ enum SelfTest {
                   == ["Alpha", "Beta", "Gamma"])
     }
 
-    /// Exercises the settings model and the two pure presentation/alert
-    /// functions against temp paths. Throwing calls are hoisted out of `check`'s
-    /// non-throwing autoclosure. Never touches a real user path: every settings
-    /// write goes to the staged temp root, and `AppConfig.path` is only ever
-    /// compared against, never opened.
-
     /// Pins the searchable picker's commit rule: a typed name or id resolves to
     /// the option's id, and anything else is kept verbatim as a free-form id (the
     /// locally-configured-model case). Pure, so it runs without a popover.
@@ -805,6 +764,11 @@ enum SelfTest {
               resolveModelSelection("", in: options) == "")
     }
 
+    /// Exercises the settings model and the two pure presentation/alert
+    /// functions against temp paths. Throwing calls are hoisted out of `check`'s
+    /// non-throwing autoclosure. Never touches a real user path: every settings
+    /// write goes to the staged temp root, and `AppConfig.path` is only ever
+    /// compared against, never opened.
     private static func checkSettings() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
@@ -813,9 +777,15 @@ enum SelfTest {
 
             var c = AppConfig.load(from: settingsPath)
             c.refreshMinutes = 42
+            c.apiKey = "sk-or-v1-file-key"
             try c.save(to: settingsPath)
-            check("app settings round-trip",
-                  AppConfig.load(from: settingsPath).refreshMinutes == 42)
+            let loaded = AppConfig.load(from: settingsPath)
+            check("app settings round-trip", loaded.refreshMinutes == 42)
+            check("the api key round-trips through the settings file",
+                  loaded.apiKey == "sk-or-v1-file-key")
+            // The key is plain text here, so the file must stay owner-only.
+            let fileMode = (try? FileManager.default.attributesOfItem(atPath: settingsPath))?[.posixPermissions] as? NSNumber
+            check("the settings file is written owner-only (0600)", fileMode?.intValue == 0o600)
 
             var registry = AppConfig.load(from: settingsPath)
             registry.addedHarnesses = ["pi", "hermes"]
@@ -848,7 +818,8 @@ enum SelfTest {
                   older.refreshMinutes == 33 && !older.showMoneyInMenuBar && older.showIconInMenuBar
                       && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
                       && older.notifyBelowAmount == 7.5 && !older.launchAtLogin
-                      && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty)
+                      && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty
+                      && older.apiKey == nil)
 
             // A present-but-mistyped value must cost only its own field: without
             // `try?` per field the whole decode throws and refreshMinutes resets

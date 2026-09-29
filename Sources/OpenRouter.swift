@@ -108,11 +108,8 @@ enum OpenRouterError: Error {
 /// the pure parser. `loadCachedCatalog` takes its path so the cache rule is
 /// testable without touching the real user cache.
 enum OpenRouter {
-    static let catalogPath: String = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
-        return base.appendingPathComponent("ProviderCostController/models-cache.json").path
-    }()
+    /// `~/.pesa-app/models-cache.json`, alongside the settings file.
+    static let catalogPath: String = "\(AppConfig.directory)/models-cache.json"
 
     /// A missing field must never be read as zero: a missing `total_usage`
     /// treated as 0 would show the whole balance as remaining.

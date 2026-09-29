@@ -1,4 +1,4 @@
-# Provider Cost Controller
+# Pesa
 
 A macOS menu bar app that shows your OpenRouter remaining balance and lets you
 read and change the model configured in the coding agents installed on your
@@ -100,9 +100,9 @@ and text that matches no catalog model is still accepted as a free-form id.
 Command Line Tools only — no Xcode project, no SwiftPM, no XCTest.
 
 ```sh
-./scripts/build.sh          # swiftc -> .build/ProviderCostController
-./scripts/build-app.sh      # build + assemble + sign ProviderCostController.app
-open ProviderCostController.app
+./scripts/build.sh          # swiftc -> .build/Pesa
+./scripts/build-app.sh      # build + assemble + sign Pesa.app
+open Pesa.app
 ```
 
 `build.sh` compiles every file in `Sources/` directly with `swiftc`. SwiftPM is
@@ -110,15 +110,14 @@ not used because `swift package` cannot link its own manifest against
 `PackageDescription` on a CLT-only install, and XCTest is not shipped in the
 CLT toolchain. `build-app.sh` copies the binary and `Resources/Info.plist` into
 the bundle and signs it with the stable identity below when it is present in the
-Keychain, and ad-hoc with `codesign -s -` otherwise.
+signing keychain, and ad-hoc with `codesign -s -` otherwise.
 
 ### Stable signing identity
 
 An ad-hoc signature has no stable identity: its designated requirement is a hash
-of the code (`cdhash`), so the requirement changes whenever the code changes and
-macOS re-prompts for Keychain access. Create a self-signed code-signing
-certificate in the login keychain once (no admin rights, no trust-store
-changes):
+of the code (`cdhash`), so macOS treats every build as a different program.
+Create a self-signed code-signing certificate in the login keychain once (no
+admin rights, no trust-store changes):
 
 ```sh
 ./scripts/make-signing-identity.sh
@@ -127,10 +126,10 @@ changes):
 `build-app.sh` picks the identity up automatically from then on; the app's
 designated requirement is certificate-based and survives code changes. It prints
 the resulting requirement after signing (`certificate-based requirement —
-stable`, or a `cdhash-based (ad-hoc)` warning with the fix), so a build that
-will re-prompt for Keychain access says so instead of looking successful. A
-self-signed identity shows as `CSSMERR_TP_NOT_TRUSTED` in `security
-find-identity`; both scripts explain that this is expected and harmless. Override
+stable`, or a `cdhash-based (ad-hoc)` warning with the fix), so an ad-hoc build
+is flagged rather than looking successful. A self-signed identity shows as
+`CSSMERR_TP_NOT_TRUSTED` in `security find-identity`; both scripts explain that
+this is expected and harmless. Override
 the choice with `SIGNING_IDENTITY=<name>`, which falls back to ad-hoc if the
 name is not in the Keychain. To remove the identity:
 `security delete-identity -c "ProviderCostController Signing"`.
@@ -138,55 +137,44 @@ name is not in the Keychain. To remove the identity:
 ## Flags
 
 ```sh
-./.build/ProviderCostController --selftest   # assert-based suite; prints PASS/FAIL and exits 0 on success
-./.build/ProviderCostController --probe      # prints the status item facts: statusItem/button/window/visible
+./.build/Pesa --selftest   # assert-based suite; prints PASS/FAIL and exits 0 on success
+./.build/Pesa --probe      # prints the status item facts: statusItem/button/window/visible
 ```
 
 `--selftest` runs without touching AppKit, so it works in a plain terminal. The
-suite uses only temp directories and the `selftest` Keychain account; it never
-reads or writes a real tool config or the real settings file.
+suite uses only temp directories; it never reads or writes a real tool config,
+the real settings file, or `~/.pesa-app`.
 
 ## The API key
 
-The OpenRouter key is stored in the macOS Keychain only, as a generic password:
+The OpenRouter key is stored in `~/.pesa-app/settings.json`, in the `apiKey`
+field — a plain-text file, and the app's default storage. The directory and the
+file are created owner-only (`0700`/`0600`), but the value is **not encrypted**:
+anything running as your user can read it, so treat that directory as private.
 
-- service: `provider-cost-controller`
-- account: `openrouter`
+It is never logged or included in an error message. The app offers **Save**,
+**Test key** (calls `/credits` and reports the result) and **Clear**.
 
-It is never written to a plain file, logged, or included in an error message.
-The app offers **Test key** (calls `/credits` and reports the result) and
-**Clear**.
+The key is read from the settings file as an ordinary in-memory value, so there
+is **no Keychain prompt at all**. To remove the key, use **Clear**, or edit
+`~/.pesa-app/settings.json` and delete the `apiKey` field.
 
-The key is read from the Keychain **once per launch** and cached in memory:
-`AppState` reads it in `init` and never again, so the launch refresh, the
-refresh timer, the harness editor's endpoint fetch, and **Test key** all reuse
-it. Earlier builds re-read on every one of those, which is why macOS prompted
-several times in one session. An external change (for example
-`security delete-generic-password`) is picked up on the next launch, or
-immediately with **Save**/**Clear**.
-
-To remove the key:
+Older builds stored the key in the macOS Keychain (service
+`provider-cost-controller`, account `openrouter`). That item is no longer read;
+delete it once with:
 
 ```sh
 security delete-generic-password -s provider-cost-controller -a openrouter
 ```
 
-or use the **Clear** button in the app's Settings.
-
-macOS prompts for each Keychain access until the item's ACL trusts the app's
-code signature. A key saved by an older ad-hoc-signed build has its ACL bound to
-the old code hash, so the first read by the newly certificate-signed app prompts
-once; click **Always Allow** (or delete and re-save the key from the new build)
-to rebind it. An ad-hoc signature's hash changes on every rebuild, so after each
-`scripts/build.sh` the app looks like a new program and prompts again — run
-`scripts/make-signing-identity.sh` once for a stable, certificate-based identity
-that survives rebuilds. The Settings API-key section says the same thing.
+The settings file is read at launch and written on every change, so a hand-edit
+made while the app is running is not picked up until the next launch.
 
 ## Settings
 
-Settings live in
-`~/Library/Application Support/ProviderCostController/config.json`:
+Settings live in `~/.pesa-app/settings.json`:
 
+- the OpenRouter API key (`apiKey`; plain text — see [The API key](#the-api-key))
 - refresh interval in minutes
 - launch at login
 - the harnesses shown in the popover (`addedHarnesses`, added and removed in Settings)

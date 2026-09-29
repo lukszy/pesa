@@ -33,7 +33,7 @@ struct ToolPaths {
     func stagedInTempDir(from fixtures: String) throws -> ToolPaths {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
-            .appendingPathComponent("ProviderCostController-\(UUID().uuidString)").path
+            .appendingPathComponent("Pesa-\(UUID().uuidString)").path
         try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
 
         if let entries = try? fm.contentsOfDirectory(atPath: fixtures) {

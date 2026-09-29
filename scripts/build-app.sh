@@ -5,10 +5,10 @@ cd "$(dirname "$0")/.."
 
 ./scripts/build.sh
 
-rm -rf ProviderCostController.app
-mkdir -p ProviderCostController.app/Contents/MacOS
-cp .build/ProviderCostController ProviderCostController.app/Contents/MacOS/ProviderCostController
-cp Resources/Info.plist ProviderCostController.app/Contents/Info.plist
+rm -rf Pesa.app
+mkdir -p Pesa.app/Contents/MacOS
+cp .build/Pesa Pesa.app/Contents/MacOS/Pesa
+cp Resources/Info.plist Pesa.app/Contents/Info.plist
 # Prefer a caller-provided identity, then the stable default, else fall back to
 # ad-hoc so a fresh machine still builds. `find-identity -p codesigning` lists an
 # untrusted identity too (CSSMERR_TP_NOT_TRUSTED), which is exactly what
@@ -28,7 +28,7 @@ elif ! security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
   echo "  (CSSMERR_TP_NOT_TRUSTED); expected, and harmless for local signing."
 fi
 
-codesign --force --sign "$IDENTITY" ProviderCostController.app
+codesign --force --sign "$IDENTITY" Pesa.app
 
 # Surface the thing that actually decides whether macOS re-prompts for Keychain
 # access: the designated requirement. A certificate-based one names the cert and
@@ -36,7 +36,7 @@ codesign --force --sign "$IDENTITY" ProviderCostController.app
 # the code, so it changes on every build and the prompt returns.
 # `codesign -d -r-` prefixes an ad-hoc requirement with "# ", so match the word
 # anywhere on the line rather than anchoring.
-REQUIREMENT="$(codesign -d -r- ProviderCostController.app 2>&1 | grep -m1 'designated' || true)"
+REQUIREMENT="$(codesign -d -r- Pesa.app 2>&1 | grep -m1 'designated' || true)"
 case "$REQUIREMENT" in
   *cdhash*)
     echo "warning: designated requirement is cdhash-based (ad-hoc)." >&2
@@ -45,7 +45,6 @@ case "$REQUIREMENT" in
     ;;
   *certificate*)
     echo "signature: certificate-based requirement — stable across rebuilds."
-    echo "  On the first Keychain prompt click Always Allow and it will stick."
     ;;
   *)
     echo "warning: could not read the designated requirement (codesign output below)" >&2

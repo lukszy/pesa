@@ -9,7 +9,7 @@ func makeStatusItem() -> NSStatusItem {
     if let button = item.button {
         button.image = NSImage(
             systemSymbolName: "dollarsign.circle",
-            accessibilityDescription: "Provider Cost Controller"
+            accessibilityDescription: "Pesa"
         )
         button.title = " $0.00"
     }
@@ -98,7 +98,7 @@ final class StatusItemController: NSObject {
             redacted: config.hidesAmountInMenuBar && !isHovering)
         item.button?.title = presentation.text.map { " \($0)" } ?? ""
         item.button?.image = presentation.symbol.flatMap {
-            NSImage(systemSymbolName: $0, accessibilityDescription: "Provider Cost Controller")
+            NSImage(systemSymbolName: $0, accessibilityDescription: "Pesa")
         }
     }
 }

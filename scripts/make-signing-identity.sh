@@ -28,10 +28,10 @@ if security find-identity -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
     if ! security find-identity -v -p codesigning | grep -qF "\"$IDENTITY_NAME\""; then
         echo "  it is self-signed and not in the trust store (CSSMERR_TP_NOT_TRUSTED);"
         echo "  that is expected. codesign signs with it and the app's designated"
-        echo "  requirement stays certificate-based, so Keychain access granted once"
-        echo "  with Always Allow persists across rebuilds."
+        echo "  requirement stays certificate-based, so the app keeps one identity"
+        echo "  across rebuilds."
     fi
-    echo "  verify with: codesign -d -r- ProviderCostController.app"
+    echo "  verify with: codesign -d -r- Pesa.app"
     exit 0
 fi
 

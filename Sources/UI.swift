@@ -224,7 +224,7 @@ func discoverAdapters(_ adapters: [ToolAdapter]) -> DiscoveryOutcome {
 }
 
 /// Human-readable error text. Never includes key material: no error from the
-/// Keychain or the network carries the credential. Free function so the
+/// network or the Keychain carries the credential. Free function so the
 /// off-main discovery path can use the same mapping as `AppState.describe`.
 func describeError(_ error: Error) -> String {
     if let openRouter = error as? OpenRouterError {
@@ -244,8 +244,6 @@ func describeError(_ error: Error) -> String {
 /// `errorText` / `rows` happens on this actor.
 @MainActor
 final class AppState: ObservableObject {
-    static let keychainAccount = "openrouter"
-
     /// The one instance the app runs on. `AppDelegate` and the `Settings` scene
     /// must observe the same state; the delegate's property is not reliably
     /// ready when the scene body is first evaluated, so the instance is made
@@ -319,35 +317,20 @@ final class AppState: ObservableObject {
     /// Set when a discovery request lands mid-pass, so the newer settings are
     /// picked up instead of being dropped as stale.
     private var discoveryPending = false
-    /// In-memory copy of the stored key, so the Keychain is read at most once
-    /// per launch. macOS prompts for each access until the item's ACL trusts the
-    /// app's code signature; the old code re-read on every refresh and every
-    /// editor fetch, so one session prompted repeatedly. `saveKey`/`clearKey`
-    /// keep this in step.
-    private var cachedKey: String?
-    private var didLoadKey = false
-
     init(paths: ToolPaths = .real) {
         self.paths = paths
         self.config = AppConfig.load()
-        // The one Keychain read of the launch; everything after this reuses the
-        // cache instead of prompting again.
-        self.cachedKey = Keychain.get(account: Self.keychainAccount)
-        self.didLoadKey = true
-        self.hasKey = Keychain.isUsableKey(self.cachedKey)
+        // Materialise `~/.pesa-app/settings.json` on first run: it is the key's
+        // home and is meant to be hand-editable, so it should exist even before
+        // the user changes a setting. A failure here is not fatal — the next
+        // `config` change retries — so it is silent.
+        if !FileManager.default.fileExists(atPath: AppConfig.path) {
+            try? self.config.save()
+        }
+        // The key lives in the settings file, so this is a plain read.
+        self.hasKey = isUsableAPIKey(self.config.apiKey)
         startRefreshTimer()
         Task { await refreshAuthorizationStatus() }
-    }
-
-    /// The stored key from the one-per-launch cache. An external change (e.g.
-    /// `security delete-generic-password`) is not noticed until the next launch;
-    /// that is the deliberate cost of not re-prompting on every refresh.
-    private func loadStoredKey() -> String? {
-        if !didLoadKey {
-            didLoadKey = true
-            cachedKey = Keychain.get(account: Self.keychainAccount)
-        }
-        return cachedKey
     }
 
     // MARK: - Adapters
@@ -380,12 +363,11 @@ final class AppState: ObservableObject {
                 existing: CatalogCache.details, new: catalog.details)
         }
 
-        // Cached read: the guard and `hasKey` still agree, but a refresh no
-        // longer re-prompts the Keychain. An external add or removal is picked
-        // up on the next launch, or immediately via Save/Clear here.
-        let storedKey = loadStoredKey()
-        hasKey = Keychain.isUsableKey(storedKey)
-        guard Keychain.isUsableKey(storedKey), let key = storedKey else {
+        // The key comes from the settings file, so the guard and `hasKey` cannot
+        // disagree and nothing prompts.
+        let storedKey = config.apiKey
+        hasKey = isUsableAPIKey(storedKey)
+        guard isUsableAPIKey(storedKey), let key = storedKey else {
             errorText = "No OpenRouter API key. Add one in Settings."
             // A key removed outside the app (e.g. `security delete-generic-password`)
             // never passes through `clearKey()`, so without this the popover
@@ -563,7 +545,7 @@ final class AppState: ObservableObject {
             editEndpoints = cached.endpoints
             return
         }
-        guard let key = loadStoredKey(), Keychain.isUsableKey(key) else {
+        guard let key = config.apiKey, isUsableAPIKey(key) else {
             editEndpoints = []
             return
         }
@@ -602,34 +584,28 @@ final class AppState: ObservableObject {
 
     // MARK: - API key
 
+    /// Writes the key into `config.apiKey`; the `didSet` on `config` persists it
+    /// to `~/.pesa-app/settings.json` and surfaces a save failure via `errorText`.
     func saveKey() {
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             keyStatus = "Enter a key first."
             return
         }
-        do {
-            try Keychain.set(key, account: Self.keychainAccount)
-            // The saved value is the new cache: no read needed, and the next
-            // refresh uses it without a prompt.
-            cachedKey = key
-            didLoadKey = true
-            apiKeyInput = ""
-            hasKey = true
-            // The previous key's per-key figures belong to a key that is no
-            // longer stored; clear them so the popover cannot attribute them
-            // to the new key until its own fetch lands.
-            keyUsage = nil
-            keyStatus = "Key saved to the Keychain."
-        } catch {
-            keyStatus = "Could not save the key: \(describe(error))"
-        }
+        config.apiKey = key
+        apiKeyInput = ""
+        hasKey = true
+        // The previous key's per-key figures belong to a key that is no longer
+        // stored; clear them so the popover cannot attribute them to the new key
+        // until its own fetch lands.
+        keyUsage = nil
+        keyStatus = "Key saved to ~/.pesa-app/settings.json."
     }
 
     func testKey() async {
         let typed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = typed.isEmpty ? (loadStoredKey() ?? "") : typed
-        guard Keychain.isUsableKey(key) else {
+        let key = typed.isEmpty ? (config.apiKey ?? "") : typed
+        guard isUsableAPIKey(key) else {
             keyStatus = "Enter a key first."
             return
         }
@@ -642,19 +618,13 @@ final class AppState: ObservableObject {
     }
 
     func clearKey() {
-        do {
-            try Keychain.delete(account: Self.keychainAccount)
-            cachedKey = nil
-            didLoadKey = true
-            apiKeyInput = ""
-            hasKey = false
-            // `refresh()` returns early with no stored key, so without this the
-            // removed key's usage line would stay on screen indefinitely.
-            keyUsage = nil
-            keyStatus = "Key removed."
-        } catch {
-            keyStatus = "Could not remove the key: \(describe(error))"
-        }
+        config.apiKey = nil
+        apiKeyInput = ""
+        hasKey = false
+        // `refresh()` returns early with no stored key, so without this the
+        // removed key's usage line would stay on screen indefinitely.
+        keyUsage = nil
+        keyStatus = "Key removed."
     }
 
     // MARK: - Alerts
@@ -728,7 +698,7 @@ final class AppState: ObservableObject {
     // MARK: - Launch at login
 
     /// `SMAppService.mainApp.register()` throws when the process is not a
-    /// bundled app (running `.build/ProviderCostController` directly), so the
+    /// bundled app (running `.build/Pesa` directly), so the
     /// failure is surfaced and the setting is left unchanged rather than
     /// persisted as if it had worked.
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -767,7 +737,8 @@ final class AppState: ObservableObject {
     }
 
     /// Human-readable error text. Never includes key material: no error from
-    /// the Keychain or the network carries the credential.
+    /// the network carries the credential. A key loaded from the settings file
+    /// is never logged or included in an error message.
     private func describe(_ error: Error) -> String {
         describeError(error)
     }
@@ -1322,7 +1293,7 @@ struct SettingsView: View {
                     Button("Clear") { state.clearKey() }
                         .disabled(!state.hasKey)
                 }
-                Text(state.hasKey ? "A key is stored in the Keychain." : "No key stored yet.")
+                Text(state.hasKey ? "A key is stored in ~/.pesa-app/settings.json." : "No key stored yet.")
                     .foregroundStyle(.secondary)
                 if let status = state.keyStatus {
                     Text(status).foregroundStyle(.secondary)
@@ -1330,7 +1301,7 @@ struct SettingsView: View {
             } header: {
                 Text("OpenRouter API key")
             } footer: {
-                Text("macOS asks once to allow Keychain access — choose Always Allow. A rebuild with an ad-hoc signature changes the app's identity and makes it ask again; run scripts/make-signing-identity.sh once to stop that.")
+                Text("Stored in ~/.pesa-app/settings.json, created owner-only (0600). It is a plain-text file, so keep that directory private.")
             }
         }
         .formStyle(.grouped)
@@ -1344,7 +1315,7 @@ struct SettingsView: View {
             }
             Section("Startup") {
                 settingToggle("Launch at login",
-                              subtitle: "Start ProviderCostController when you log in.",
+                              subtitle: "Start Pesa when you log in.",
                               isOn: Binding(get: { state.config.launchAtLogin },
                                             set: { state.setLaunchAtLogin($0) }))
                 if let error = state.launchAtLoginError {
