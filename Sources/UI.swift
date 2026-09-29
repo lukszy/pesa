@@ -1393,10 +1393,13 @@ struct SettingsView: View {
                     Text("File (~/.pesa-app/settings.json)").tag(KeyStorage.file)
                     Text("Keychain").tag(KeyStorage.keychain)
                 }
-                // Full-width on its own line, with a placeholder: a bare
-                // `SecureField` in a grouped `Form` puts its label on the left
-                // and shares the row, which pushes the field narrow.
-                SecureField("Paste your OpenRouter API key", text: $state.apiKeyInput)
+                // Full-width on its own line, with a prompt: a bare `SecureField`
+                // in a grouped `Form` puts its label on the left and shares the
+                // row, which pushes the field narrow. When a key is stored, the
+                // empty field shows a shadowed mask instead of the paste prompt,
+                // so it does not read as "no key".
+                SecureField("OpenRouter API key", text: $state.apiKeyInput, prompt: Text(
+                    state.hasKey ? "**************" : "Paste your OpenRouter API key"))
                     .labelsHidden()
                     .textFieldStyle(.roundedBorder)
                 HStack {
