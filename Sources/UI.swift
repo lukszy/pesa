@@ -905,8 +905,7 @@ struct ModelEditorView: View {
             }
             // Searchable select: the dropdown filters as you type, and text that
             // matches no catalog model is still accepted as a free-form id.
-            SearchableModelField(models: modelOptions, selection: $state.editModel)
-                .frame(height: 24)
+            SearchablePicker(options: modelOptions, selection: $state.editModel)
             if let detail = state.modelDetail(for: state.editModel),
                let summary = formatModelDetail(detail) {
                 Text(summary)

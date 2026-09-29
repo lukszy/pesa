@@ -34,6 +34,7 @@ enum SelfTest {
         checkOpenRouter()
         checkKeyUsageAndModelDetails()
         checkEndpointsAndFormatting()
+        checkSearchablePicker()
         checkSettings()
         checkHarnessTiles()
         let anyFailed = results.contains { !$0.condition }
@@ -755,6 +756,24 @@ enum SelfTest {
     /// non-throwing autoclosure. Never touches a real user path: every settings
     /// write goes to the staged temp root, and `AppConfig.path` is only ever
     /// compared against, never opened.
+    /// Pins the searchable picker's commit rule: a typed name or id resolves to
+    /// the option's id, and anything else is kept verbatim as a free-form id (the
+    /// locally-configured-model case). Pure, so it runs without a popover.
+    private static func checkSearchablePicker() {
+        let options = [(id: "openrouter/anthropic/claude-fable-latest", name: "Anthropic: Claude Fable"),
+                       (id: "deepseek/deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash")]
+        check("a typed display name resolves to its id",
+              resolveModelSelection("Anthropic: Claude Fable", in: options)
+                  == "openrouter/anthropic/claude-fable-latest")
+        check("a typed id resolves to itself",
+              resolveModelSelection("deepseek/deepseek-v4.1-flash", in: options)
+                  == "deepseek/deepseek-v4.1-flash")
+        check("unmatched text is kept verbatim as a free-form id",
+              resolveModelSelection("  local/model:x  ", in: options) == "local/model:x")
+        check("an empty selection resolves to empty, never an arbitrary option",
+              resolveModelSelection("", in: options) == "")
+    }
+
     private static func checkSettings() {
         do {
             let cfg = try ToolPaths().stagedInTempDir(from: "Tests/fixtures")
