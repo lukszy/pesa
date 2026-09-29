@@ -899,7 +899,7 @@ struct PopoverView: View {
     private func tile(_ row: ToolRow) -> some View {
         Button {
             state.beginEdit(row)
-            HarnessWindow.open(for: row, state: state)
+            SettingsWindow.open()
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -919,9 +919,10 @@ struct PopoverView: View {
 
 }
 
-/// The model editor, hosted in `HarnessWindow` rather than in the popover.
-/// Reads and writes `AppState`'s editor fields so the window can be retargeted
-/// to another harness on each open without keeping any state of its own.
+/// The model editor, hosted in the Settings window's detail pane (the same
+/// window as the harness list, not a separate one). Reads and writes
+/// `AppState`'s editor fields, so the detail pane can be retargeted to another
+/// harness without keeping any state of its own.
 struct ModelEditorView: View {
     @ObservedObject var state: AppState
     let row: ToolRow
@@ -954,10 +955,7 @@ struct ModelEditorView: View {
                 openRouterProviders
             }
             HStack {
-                Button("Cancel") {
-                    state.cancelEdit()
-                    HarnessWindow.dismiss()
-                }
+                Button("Cancel") { state.cancelEdit() }
                 Spacer()
                 Button("Set") { state.commitEdit() }
                     .disabled(state.editProvider.isEmpty || state.editModel.isEmpty)
@@ -1181,51 +1179,6 @@ struct ModelEditorView: View {
     }
 }
 
-/// One lazily-created `NSWindow` for the harness editor. The SwiftUI `Settings`
-/// scene cannot be reused here: `openWindow` is unreliable from a view hosted in
-/// an `NSPopover` because the popover sits outside the SwiftUI scene graph. The
-/// window is created once and retargeted on each open, so a second click raises
-/// the existing window instead of opening another.
-@MainActor
-enum HarnessWindow {
-    private static var window: NSWindow?
-
-    static func open(for row: ToolRow, state: AppState) {
-        let window = self.window ?? makeWindow()
-        self.window = window
-        // Fresh root view per open: the editor's bindings read AppState's
-        // editor fields, which `beginEdit` has just retargeted.
-        window.contentView = NSHostingView(rootView: ModelEditorView(state: state, row: row))
-        window.title = "ProviderCostController — \(row.displayName)"
-        // Proven fix: without activate + makeKey the window reports
-        // `isKeyWindow = false` and opens behind everything.
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    private static func makeWindow() -> NSWindow {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false)
-        window.isReleasedWhenClosed = false
-        // Resizable so a taller editor is not clipped. The default is above the
-        // floor so the editor's optional model-detail and read-only lines fit on
-        // first open; this is the minimum the user can resize down to.
-        window.contentMinSize = NSSize(width: 620, height: 300)
-        window.center()
-        return window
-    }
-
-    /// Dismisses the editor without writing. Used by the editor's Cancel; the
-    /// window is kept alive (`isReleasedWhenClosed = false`) and retargeted on
-    /// the next open.
-    static func dismiss() {
-        window?.close()
-    }
-}
-
 /// The settings content, shown in the SwiftUI `Settings` scene opened by the
 /// status item's right-click `Settings…` item and the app menu's Settings…
 /// item. Quit intentionally lives on the status item's right-click menu now,
@@ -1285,18 +1238,38 @@ struct SettingsView: View {
         .task {
             if !state.hasCompletedDiscovery { await state.discoverProviders() }
         }
+        // The popover's tile and the harness list both start an edit; bring the
+        // sidebar to the section whose pane shows the editor.
+        .onAppear { if state.editAdapterID != nil { section = .harnesses } }
+        .onChange(of: state.editAdapterID) { newValue in
+            if newValue != nil { section = .harnesses }
+        }
     }
 
+    /// The detail pane. An in-progress harness edit takes the whole pane — the
+    /// same Settings window, not a separate one — otherwise the sidebar's
+    /// selected section. `Set` and `Cancel` clear the edit target, which returns
+    /// the pane to the harness list.
     @ViewBuilder
     private var detail: some View {
-        switch section ?? .general {
-        case .general: generalDetail
-        case .apiKey: apiKeyDetail
-        case .menuBar: menuBarDetail
-        case .harnesses: harnessesDetail
-        case .alerts: alertsDetail
-        case .about: aboutDetail
+        if let row = editingRow {
+            ScrollView { ModelEditorView(state: state, row: row) }
+        } else {
+            switch section ?? .general {
+            case .general: generalDetail
+            case .apiKey: apiKeyDetail
+            case .menuBar: menuBarDetail
+            case .harnesses: harnessesDetail
+            case .alerts: alertsDetail
+            case .about: aboutDetail
+            }
         }
+    }
+
+    /// The harness currently being edited, if its row is known.
+    private var editingRow: ToolRow? {
+        guard let id = state.editAdapterID else { return nil }
+        return state.rows.first { $0.id == id }
     }
 
     /// A settings row with a title and an optional secondary line, so the
@@ -1401,7 +1374,6 @@ struct SettingsView: View {
             if state.rowErrors[row.id] == nil {
                 Button("Configure…") {
                     state.beginEdit(row)
-                    HarnessWindow.open(for: row, state: state)
                 }
             }
         }

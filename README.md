@@ -2,8 +2,8 @@
 
 A macOS menu bar app that shows your OpenRouter remaining balance and lets you
 read and change the model configured in the coding agents installed on your
-machine — clicking a harness's tile in the popover opens that harness's model
-editor in its own window.
+machine — clicking a harness's tile in the popover opens the Settings window at
+that harness's model editor.
 
 The app is a single `LSUIElement` process: no Dock icon, no persistent daemon,
 and no third-party dependencies.
@@ -33,9 +33,9 @@ and no third-party dependencies.
   and tile carries its own icon (pi → `circle.hexagongrid`, opencode →
   `chevron.left.forwardslash.chevron.right`, hermes → `paperplane`). A detected
   tool whose config cannot be read is hidden and counted in the footer instead.
-  Clicking a tile opens that tool's model editor in its own window, where the
-  built-in searchable model selector (or free text) writes a new one back to that tool's own
-  config. For a model that
+  Clicking a tile opens the Settings window at that tool's model editor, where
+  the built-in searchable model selector (or free text) writes a new one back
+  to that tool's own config. For a model that
   is in OpenRouter's public catalog, the editor also shows a line such as
   `1M context · $3.00/M in · $15.00/M out`. Those prices are the **base** rates
   from `pricing.prompt`/`pricing.completion`; the same response carries tiered
@@ -209,11 +209,11 @@ Right-clicking the menu bar icon opens a small menu with **Settings…**, **Buy
 credits…** (opens OpenRouter's credits page in the default browser), and
 **Quit**; left-clicking still toggles the popover.
 
-The per-agent model editor opens in its own AppKit window (one window,
-retargeted to the clicked harness) rather than in a SwiftUI scene, because the
-popover sits outside the SwiftUI scene graph and `openWindow` is unreliable
-there. The window is resizable and has **Set** and **Cancel**; Cancel (or
-closing the window) dismisses the editor without writing.
+The per-agent model editor is not a separate window. It is the **Agent
+Harnesses** pane's detail view in the same Settings window: choosing a harness
+(its **Configure…** button or a popover tile, which opens Settings at that
+harness) swaps the detail pane for the editor, with **Set** and **Cancel**
+returning to the harness list. Cancel writes nothing.
 
 ### Launch at login
 
