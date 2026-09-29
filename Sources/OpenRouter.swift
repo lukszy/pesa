@@ -8,17 +8,41 @@ struct Credits: Equatable {
     var remaining: Double { totalCredits - totalUsage }
 }
 
+/// Free-model (`:free` variant) daily request quota reported for the key's
+/// account. `used`/`limit`/`remaining` reset at UTC midnight.
+struct FreeModelQuota: Equatable {
+    let used: Int
+    let limit: Int
+    let remaining: Int
+}
+
 /// The per-key usage OpenRouter reports from `/api/v1/key`. This is *per key*
 /// whereas `Credits` is account-wide: with more than one key the two do not
 /// add up, so the UI must never present them as a single figure.
+///
+/// The fields after the three required usage windows are optional because the
+/// endpoint adds to itself over time: an absent `byok_usage` or
+/// `free_model_daily_requests` means "not reported", and must render as omitted,
+/// never as 0.
 struct KeyUsage: Equatable {
     let usageDaily: Double
     let usageWeekly: Double
     let usageMonthly: Double
+    /// Defaults keep the memberwise initializer source-compatible for the
+    /// limit-bar checks, which care only about `limit`.
+    var usageTotal: Double? = nil
+    /// External BYOK (your own provider key) usage, all time.
+    var byokUsage: Double? = nil
+    var isFreeTier: Bool? = nil
+    var freeModelQuota: FreeModelQuota? = nil
+    /// The key's human-readable label, so "This key" can be identified.
+    var label: String? = nil
+    /// When the key expires, parsed from `expires_at`; nil when it does not.
+    var expiresAt: Date? = nil
     /// `nil` means no cap is configured, not zero.
-    let limit: Double?
-    let limitRemaining: Double?
-    let limitReset: String?
+    var limit: Double? = nil
+    var limitRemaining: Double? = nil
+    var limitReset: String? = nil
 
     /// The limit bar's data, or `nil` when no usable cap is configured. The
     /// bar renders exactly when this is non-nil, so the visibility rule lives
@@ -148,10 +172,26 @@ enum OpenRouter {
         guard let monthly = payload["usage_monthly"] as? Double else {
             throw OpenRouterError.missingField("data.usage_monthly")
         }
+        // The free-model quota object is all-or-nothing: a half-reported quota
+        // is treated as absent rather than as a partial (and misleading) bar.
+        let quota: FreeModelQuota? = {
+            guard let raw = payload["free_model_daily_requests"] as? [String: Any],
+                  let used = raw["used"] as? Int,
+                  let limit = raw["limit"] as? Int,
+                  let remaining = raw["remaining"] as? Int else { return nil }
+            return FreeModelQuota(used: used, limit: limit, remaining: remaining)
+        }()
         return KeyUsage(
             usageDaily: daily,
             usageWeekly: weekly,
             usageMonthly: monthly,
+            usageTotal: payload["usage"] as? Double,
+            byokUsage: payload["byok_usage"] as? Double,
+            isFreeTier: payload["is_free_tier"] as? Bool,
+            freeModelQuota: quota,
+            label: payload["label"] as? String,
+            expiresAt: (payload["expires_at"] as? String)
+                .flatMap { ISO8601DateFormatter().date(from: $0) },
             limit: payload["limit"] as? Double,
             limitRemaining: payload["limit_remaining"] as? Double,
             limitReset: payload["limit_reset"] as? String)

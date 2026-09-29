@@ -585,6 +585,25 @@ enum SelfTest {
                   (try? OpenRouter.parseKeyUsage(Data(#"{"data":{"usage_daily":1,"usage_weekly":1}}"#.utf8))) == nil)
             check("a non-JSON key response is an error, not a crash",
                   (try? OpenRouter.parseKeyUsage(Data("<html>401</html>".utf8))) == nil)
+
+            // The newer optional fields: present values parse, and an absent one
+            // is nil (omitted), never 0.
+            let rich = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":2,"usage_monthly":3,"usage":99.5,"byok_usage":7.25,"is_free_tier":true,"label":"sk-or-v1-ab...cd","expires_at":"2027-12-31T23:59:59Z","free_model_daily_requests":{"used":12,"limit":50,"remaining":38}}}"#.utf8))
+            check("key usage parses the optional fields",
+                  rich.usageTotal == 99.5 && rich.byokUsage == 7.25
+                      && rich.isFreeTier == true && rich.label == "sk-or-v1-ab...cd"
+                      && rich.freeModelQuota == FreeModelQuota(used: 12, limit: 50, remaining: 38))
+            check("expires_at parses to a date", rich.expiresAt != nil)
+            let bare = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":1,"usage_monthly":1}}"#.utf8))
+            check("absent optional key fields are nil, not zero",
+                  bare.usageTotal == nil && bare.byokUsage == nil && bare.isFreeTier == nil
+                      && bare.freeModelQuota == nil && bare.label == nil && bare.expiresAt == nil)
+            let halfQuota = try OpenRouter.parseKeyUsage(Data(
+                #"{"data":{"usage_daily":1,"usage_weekly":1,"usage_monthly":1,"free_model_daily_requests":{"used":1}}}"#.utf8))
+            check("a half-reported free-model quota is treated as absent",
+                  halfQuota.freeModelQuota == nil)
         } catch {
             check("key usage checks could not run: \(error)", false)
         }
@@ -606,6 +625,54 @@ enum SelfTest {
                               limit: 100, limitRemaining: 80, limitReset: "monthly")
         check("a real cap yields its remaining/total pair",
               capped.limitProgress?.remaining == 80 && capped.limitProgress?.total == 100)
+
+        // The popover's stat tiles.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = 86_400.0
+        let base = KeyUsage(usageDaily: 1.5, usageWeekly: 10.25, usageMonthly: 92.17)
+
+        let withAccount = widgetTiles(
+            credits: Credits(totalCredits: 100, totalUsage: 25.5), usage: base, now: now)
+        check("the base tiles are today, week, month and account spent",
+              withAccount.map(\.title) == ["Today", "Week", "Month", "Account spent"])
+        check("the usage tiles format their figures",
+              withAccount[0].value == "$1.50" && withAccount[1].value == "$10.25"
+                  && withAccount[2].value == "$92.17")
+        check("the account tile shows the share of purchased credits",
+              withAccount[3].value == "$25.50" && withAccount[3].caption == "26% of $100.00")
+
+        var full = base
+        full.isFreeTier = true
+        full.limit = 5
+        full.limitRemaining = 2.12
+        full.limitReset = "monthly"
+        full.byokUsage = 3.5
+        full.freeModelQuota = FreeModelQuota(used: 12, limit: 50, remaining: 38)
+        full.expiresAt = now.addingTimeInterval(10 * day)
+        let fullTiles = widgetTiles(credits: nil, usage: full, now: now)
+        check("optional tiles appear only when their figure is present",
+              fullTiles.map(\.title)
+                  == ["Tier", "Today", "Week", "Month", "Key limit", "BYOK", "Free models", "Key"])
+        let limit = fullTiles.first { $0.title == "Key limit" }
+        check("the key-limit tile carries the cap, its reset and its bar",
+              limit?.value == "$2.12" && limit?.caption == "of $5.00 · resets monthly"
+                  && limit?.progressRemaining == 2.12 && limit?.progressTotal == 5)
+        check("the free-model tile shows used of limit",
+              fullTiles.first { $0.title == "Free models" }?.value == "12/50")
+
+        var expired = base
+        expired.expiresAt = now.addingTimeInterval(-3600)
+        check("a key expired this morning is an expired tile, not 0d",
+              widgetTiles(credits: nil, usage: expired, now: now).last?.value == "expired")
+        var far = base
+        far.expiresAt = now.addingTimeInterval(200 * day)
+        check("a key expiring far out has no expiry tile",
+              !widgetTiles(credits: nil, usage: far, now: now).contains { $0.title == "Key" })
+        check("no key and no credits means no tiles",
+              widgetTiles(credits: nil, usage: nil, now: now).isEmpty)
+        check("no purchased credits means no account tile",
+              !widgetTiles(credits: Credits(totalCredits: 0, totalUsage: 5), usage: base, now: now)
+                  .contains { $0.title == "Account spent" })
 
         do {
             let details = try OpenRouter.parseModelDetails(Data(

@@ -69,6 +69,75 @@ func formatHarnessModel(_ state: ToolState) -> String {
     return "unset"
 }
 
+/// One stat card in the popover's grid below the balance. `progressRemaining`
+/// and `progressTotal` are set only on the key-limit card, which draws a thin
+/// bar; every other card leaves them nil.
+struct StatTile: Equatable {
+    let title: String
+    let value: String
+    var caption: String? = nil
+    var progressRemaining: Double? = nil
+    var progressTotal: Double? = nil
+}
+
+/// The popover's stat tiles, in display order. Every datum is optional at the
+/// source, so a tile appears only when its figure is present — never as a `0`.
+/// `now` is a parameter so the key-expiry tile is checkable without a clock.
+///
+/// Two families, and the titles keep them apart: the per-key tiles ("Today",
+/// "Week", "Month", "Key limit", "BYOK", "Free models", "Key") come from
+/// `/key`, and "Account spent" from `/credits`. With more than one key the per-
+/// key figures do not reconcile with the account-wide one.
+func widgetTiles(credits: Credits?, usage: KeyUsage?, now: Date) -> [StatTile] {
+    var tiles: [StatTile] = []
+    if let usage {
+        if usage.isFreeTier == true {
+            tiles.append(StatTile(title: "Tier", value: "free"))
+        }
+        tiles.append(StatTile(title: "Today", value: formatBalance(usage.usageDaily)))
+        tiles.append(StatTile(title: "Week", value: formatBalance(usage.usageWeekly)))
+        tiles.append(StatTile(title: "Month", value: formatBalance(usage.usageMonthly)))
+        if let progress = usage.limitProgress {
+            let reset = usage.limitReset.map { " · resets \($0)" } ?? ""
+            tiles.append(StatTile(
+                title: "Key limit",
+                value: formatBalance(progress.remaining),
+                caption: "of \(formatBalance(progress.total))\(reset)",
+                progressRemaining: progress.remaining,
+                progressTotal: progress.total))
+        }
+        if let byok = usage.byokUsage, byok > 0 {
+            tiles.append(StatTile(title: "BYOK", value: formatBalance(byok),
+                                  caption: "own provider keys"))
+        }
+        if let quota = usage.freeModelQuota {
+            tiles.append(StatTile(title: "Free models", value: "\(quota.used)/\(quota.limit)",
+                                  caption: "today"))
+        }
+        if let expiry = expiryTile(usage, now: now) { tiles.append(expiry) }
+    }
+    if let credits, credits.totalCredits > 0 {
+        let percent = Int((credits.totalUsage / credits.totalCredits * 100).rounded())
+        tiles.append(StatTile(
+            title: "Account spent",
+            value: formatBalance(credits.totalUsage),
+            caption: "\(percent)% of \(formatBalance(credits.totalCredits))"))
+    }
+    return tiles
+}
+
+/// The key's expiry as a tile, but only when it is worth flagging: expired, or
+/// inside 30 days. `nil` otherwise, including when the key never expires.
+private func expiryTile(_ usage: KeyUsage, now: Date) -> StatTile? {
+    guard let expires = usage.expiresAt else { return nil }
+    // Direct date comparison: `dateComponents(.day)` truncates toward zero, so
+    // an expiry an hour ago would read as 0 and show "expires in 0d".
+    if expires <= now { return StatTile(title: "Key", value: "expired") }
+    let days = Calendar.current.dateComponents([.day], from: now, to: expires).day ?? 0
+    guard days <= 30 else { return nil }
+    return StatTile(title: "Key", value: "expires in \(days)d")
+}
+
 /// The harness window's one-line model summary, e.g.
 /// `1M context · $3.00/M in · $15.00/M out`. Each part is omitted when its
 /// datum is missing, and `nil` means there is nothing to show at all. These
@@ -254,6 +323,10 @@ final class AppState: ObservableObject {
     @MainActor static let shared = AppState()
 
     @Published var remaining: Double?
+    /// The last successful `/credits` result, so the popover can show spend of
+    /// purchased credits as well as the remaining balance. Kept on a failed
+    /// fetch, exactly like `remaining`.
+    @Published var accountCredits: Credits?
     /// Per-key usage from `/api/v1/key`, or nil when it is unavailable. Read
     /// only by the popover's usage line; a failed `/key` must not fail the
     /// refresh or blank the account-wide balance above it.
@@ -449,6 +522,7 @@ final class AppState: ObservableObject {
             }
             previousBalance = balance
             remaining = balance
+            accountCredits = credits
             lastUpdated = Date()
             errorText = nil
         } catch {
@@ -864,21 +938,10 @@ struct PopoverView: View {
                 .font(.system(size: 34, weight: .semibold, design: .rounded))
                 .padding(.top, 12)
                 .padding(.bottom, 12)
-            // The balance above is account-wide; this line is for the one API
-            // key. The help text says so, because with more than one key the
-            // two figures do not reconcile.
-            if let usage = state.keyUsage {
-                Text(usageLine(usage))
-                    .font(.caption).foregroundStyle(.secondary)
-                    .help("Usage for this API key. The balance above is account-wide.")
-                if let progress = usage.limitProgress {
-                    ProgressView(value: progress.remaining, total: progress.total)
-                        .progressViewStyle(.linear)
-                        .frame(maxWidth: 220)
-                    Text(limitLabel(progress, reset: usage.limitReset))
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
+            // The stats are tiles under the amount. Per-key tiles come from
+            // `/key` and the account tile from `/credits`; the titles keep them
+            // apart, because with more than one key the two do not reconcile.
+            statTiles
             if let updated = state.lastUpdated {
                 Text("Updated \(updated, style: .relative)")
                     .font(.caption).foregroundStyle(.secondary)
@@ -904,16 +967,42 @@ struct PopoverView: View {
         return formatBalance(remaining)
     }
 
-    private func usageLine(_ usage: KeyUsage) -> String {
-        // "This key" is visible, not just a tooltip: the whole point of the
-        // line is that it must not be read as part of the account-wide balance.
-        "This key: Today \(formatBalance(usage.usageDaily)) · Month \(formatBalance(usage.usageMonthly))"
+    /// The stat grid: two columns of small cards under the balance, one card per
+    /// present figure. Empty (no grid) when nothing is known yet.
+    @ViewBuilder
+    private var statTiles: some View {
+        let tiles = widgetTiles(credits: state.accountCredits, usage: state.keyUsage,
+                                now: Date())
+        if !tiles.isEmpty {
+            LazyVGrid(columns: [
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8),
+            ], spacing: 8) {
+                ForEach(tiles, id: \.title) { tile in
+                    statTile(tile)
+                }
+            }
+        }
     }
 
-    private func limitLabel(_ progress: (remaining: Double, total: Double), reset: String?) -> String {
-        var text = "\(formatBalance(progress.remaining)) of \(formatBalance(progress.total)) remaining"
-        if let reset { text += " · resets \(reset)" }
-        return text
+    private func statTile(_ tile: StatTile) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(tile.title).font(.caption2).foregroundStyle(.secondary)
+            Text(tile.value).font(.callout).bold()
+                .lineLimit(1).minimumScaleFactor(0.7)
+            if let caption = tile.caption {
+                Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
+            }
+            if let remaining = tile.progressRemaining,
+               let total = tile.progressTotal, total > 0 {
+                ProgressView(value: remaining, total: total)
+                    .progressViewStyle(.linear)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
     }
 
     // MARK: Tools
