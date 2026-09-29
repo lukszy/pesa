@@ -903,13 +903,10 @@ struct ModelEditorView: View {
                 })) {
                 ForEach(state.editProviders, id: \.self) { Text($0).tag($0) }
             }
-            if !state.editModels.isEmpty {
-                Picker("Model", selection: $state.editModel) {
-                    ForEach(modelOptions, id: \.id) { Text($0.name).tag($0.id) }
-                }
-            }
-            // The picker is a convenience; free text is always accepted.
-            TextField("or type a model id", text: $state.editModel)
+            // Searchable select: the dropdown filters as you type, and text that
+            // matches no catalog model is still accepted as a free-form id.
+            SearchableModelField(models: modelOptions, selection: $state.editModel)
+                .frame(height: 24)
             if let detail = state.modelDetail(for: state.editModel),
                let summary = formatModelDetail(detail) {
                 Text(summary)

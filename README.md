@@ -34,7 +34,7 @@ and no third-party dependencies.
   `chevron.left.forwardslash.chevron.right`, hermes → `paperplane`). A detected
   tool whose config cannot be read is hidden and counted in the footer instead.
   Clicking a tile opens that tool's model editor in its own window, where the
-  built-in picker (or free text) writes a new one back to that tool's own
+  built-in searchable model selector (or free text) writes a new one back to that tool's own
   config. For a model that
   is in OpenRouter's public catalog, the editor also shows a line such as
   `1M context · $3.00/M in · $15.00/M out`. Those prices are the **base** rates
@@ -47,7 +47,7 @@ and no third-party dependencies.
   than rendered as negative money, while a genuine free model's `"0"` stays
   valid. The details are parsed from the same `/models` response as the model
   list and **persisted in the 24-hour cache file** alongside it, so a fresh
-  cache serves both the picker and the price line without a network fetch. That
+  cache serves both the selector and the price line without a network fetch. That
   restores the cache short-circuit: `/models` is no longer pulled on every
   refresh.
 - **OpenRouter provider routing (recorded)** — for an OpenRouter model the
@@ -92,7 +92,8 @@ Model references split on the **first** `/` only, so ids that contain slashes
 dropdowns list the providers a tool has configured or authenticated; **hermes
 is the exception** — it also offers a built-in curated list of providers it
 supports even if they are not configured yet, since a hermes user may be about
-to set one up. The model dropdown always accepts free text.
+to set one up. The model selector is searchable: typing filters the dropdown,
+and text that matches no catalog model is still accepted as a free-form id.
 
 ## Build
 
