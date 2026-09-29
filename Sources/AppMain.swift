@@ -42,6 +42,9 @@ enum SettingsWindow {
         toolbar.delegate = toolbarDelegate
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
+        // Unified so the item sits in the title bar itself, next to the title,
+        // rather than in an expanded strip below it.
+        window.toolbarStyle = .unified
         window.center()
         return window
     }
@@ -71,6 +74,9 @@ final class SettingsToolbarDelegate: NSObject, NSToolbarDelegate {
         item.toolTip = "Show or hide the sidebar"
         item.image = NSImage(systemSymbolName: "sidebar.left",
                              accessibilityDescription: "Toggle sidebar")
+        // A navigational item is laid out in the leading area, immediately
+        // before the title, instead of the trailing side a plain item gets.
+        item.isNavigational = true
         item.target = self
         item.action = #selector(toggleSidebarAction)
         return item
