@@ -1015,12 +1015,13 @@ struct PopoverView: View {
             Text(balanceText)
                 .font(.system(size: 52, weight: .semibold, design: .rounded))
                 .padding(.top, 18)
-                .padding(.bottom, 18)
-            // How fresh the figures are, directly under the amount and above the
-            // tiles it describes.
+            // How fresh the figures are, directly under the amount (no gap) and
+            // above the tiles it describes. The amount's bottom padding moves
+            // here, so the breathing room falls after the timestamp instead.
             if let updated = state.lastUpdated {
                 Text("Updated \(updated, style: .relative)")
                     .font(.caption).foregroundStyle(.secondary)
+                    .padding(.bottom, 18)
             }
             // The stats are tiles under the amount. Per-key tiles come from
             // `/key` and the account tile from `/credits`; the titles keep them
