@@ -299,6 +299,11 @@ button; the title is re-rendered on both the hover change and any settings
 change. This is text redaction, not a blur: an `NSStatusItem` title is plain
 text.
 
+The **low-balance threshold**, when the alert is enabled, also tints the menu
+bar text orange while the fetched balance sits below it — the redacted `...$`
+included. Exactly at the threshold is not below it, and a failed fetch never
+tints.
+
 ### Low-balance alert
 
 Opt-in. When enabled, the app raises a local notification only on a **crossing**

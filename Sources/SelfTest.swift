@@ -1008,6 +1008,14 @@ enum SelfTest {
             check("a redacted amount with the icon hidden still renders the dots", MenuBarPresentation.of(showMoney: true, showIcon: false, balance: 17.1, error: false, redacted: true) == (text: "...$", symbol: nil))
             check("a never-fetched balance is still nil while redacted", MenuBarPresentation.of(showMoney: true, showIcon: true, balance: nil, error: false, redacted: true) == (text: nil, symbol: "dollarsign.circle"))
 
+            // The menu bar tints below the low-balance threshold. Exactly at
+            // the threshold is not below it, matching `BalanceAlert.shouldNotify`.
+            check("below the threshold warns", MenuBarPresentation.warns(balance: 4.99, threshold: 5, enabled: true))
+            check("exactly at the threshold does not warn", !MenuBarPresentation.warns(balance: 5, threshold: 5, enabled: true))
+            check("above the threshold does not warn", !MenuBarPresentation.warns(balance: 5.01, threshold: 5, enabled: true))
+            check("a disabled alert does not warn", !MenuBarPresentation.warns(balance: 1, threshold: 5, enabled: false))
+            check("a never-fetched balance does not warn", !MenuBarPresentation.warns(balance: nil, threshold: 5, enabled: true))
+
             // Alerts fire on a crossing, never on a state: the app refetches every 10 minutes.
             check("no alert when the feature is off", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: false, authorized: true))
             check("no alert when permission was refused", !BalanceAlert.shouldNotify(previous: 20, current: 3, threshold: 5, enabled: true, authorized: false))

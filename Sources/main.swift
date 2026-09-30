@@ -96,7 +96,19 @@ final class StatusItemController: NSObject {
             balance: remaining,
             error: error,
             redacted: config.hidesAmountInMenuBar && !isHovering)
-        item.button?.title = presentation.text.map { " \($0)" } ?? ""
+        // Tint the amount (or the redacted `...$`) orange below the alert
+        // threshold. The icon keeps its own tint, so only the text changes.
+        // The default state uses `labelColor` so it still follows the menu
+        // bar's light/dark appearance, and always setting an attributed title
+        // means a warning colour can never stick after the balance recovers.
+        let warning = !error && MenuBarPresentation.warns(
+            balance: remaining,
+            threshold: config.notifyBelowAmount,
+            enabled: config.notifyBelowEnabled)
+        let title = presentation.text.map { " \($0)" } ?? ""
+        item.button?.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [.foregroundColor: warning ? NSColor.systemOrange : NSColor.labelColor])
         item.button?.image = presentation.symbol.flatMap {
             NSImage(systemSymbolName: $0, accessibilityDescription: "Pesa")
         }

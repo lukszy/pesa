@@ -227,6 +227,15 @@ enum MenuBarPresentation {
         let symbol: String? = (showIcon || text == nil) ? "dollarsign.circle" : nil
         return (text: text, symbol: symbol)
     }
+
+    /// Whether the menu bar amount should be tinted as a low-balance warning:
+    /// the low-balance alert is enabled and the fetched balance sits strictly
+    /// below its threshold. A failed fetch or a never-fetched balance never
+    /// warns. Pure, so `StatusItemController` only owns the drawing.
+    static func warns(balance: Double?, threshold: Double, enabled: Bool) -> Bool {
+        guard enabled, let balance else { return false }
+        return balance < threshold
+    }
 }
 
 /// Whether to raise a low-balance notification. Pure: the caller owns `Date()`
