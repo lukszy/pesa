@@ -207,21 +207,6 @@ func formatModelRates(_ detail: ModelDetail) -> String? {
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
-/// The distinct upstream providers serving a model, e.g. `Morph · Fireworks`.
-/// At most `limit` names, then `+N` for the remainder; a provider that appears
-/// on several endpoints (differing quantization tags) is named once. `nil` when
-/// there are none.
-func formatProviderNames(_ endpoints: [EndpointInfo], limit: Int = 3) -> String? {
-    var seen = Set<String>()
-    var names: [String] = []
-    for endpoint in endpoints where seen.insert(endpoint.providerName).inserted {
-        names.append(endpoint.providerName)
-    }
-    guard !names.isEmpty else { return nil }
-    if names.count <= limit { return names.joined(separator: " · ") }
-    return names.prefix(limit).joined(separator: " · ") + " · +\(names.count - limit)"
-}
-
 /// What the menu bar status item renders. Pure, so the behaviour a user would
 /// otherwise have to observe by eye is testable. `StatusItemController` renders
 /// the result.
@@ -493,9 +478,6 @@ final class AppState: ObservableObject {
     /// is volatile and small, so it is never written to disk.
     private var endpointsCache: [String: (fetchedAt: Date, endpoints: [EndpointInfo])] = [:]
     private var endpointsTask: Task<Void, Never>?
-    /// Models with a tile endpoint fetch in flight, so a re-render of the
-    /// popover cannot fan out duplicate requests for the same model.
-    private var tileEndpointsInFlight: Set<String> = []
     /// The Keychain backend is read at most once per launch (macOS prompts per
     /// access until the item's ACL trusts the app's signature); the file backend
     /// needs no cache. Reset whenever the key or the backend changes.
@@ -739,9 +721,16 @@ final class AppState: ObservableObject {
     /// fetch is in flight and after one fails; the editor's base price line is
     /// independent, so a failure never blanks it.
     @Published var editEndpoints: [EndpointInfo] = []
-    /// Endpoint facts for the popover tiles, keyed by model id. Published so a
-    /// late fetch re-renders the tile. Shares `endpointsCache` with the editor.
-    @Published private(set) var tileEndpoints: [String: [EndpointInfo]] = [:]
+    /// The upstream provider that served each harness's last request, keyed by
+    /// harness id. Only pi records an OpenRouter generation id, so only its
+    /// entry is ever set. Published so a late fetch re-renders the tile.
+    @Published private(set) var lastProviderByTool: [String: String] = [:]
+    /// The last pi generation id resolved, so an unchanged session does not
+    /// re-fetch the same immutable generation.
+    private var lastPiGeneration: (id: String, provider: String)?
+    /// The generation id of the most recent `loadLastProvider` call, so a late
+    /// reply from an older call cannot overwrite a newer provider.
+    private var pendingGenerationID: String?
 
     func beginEdit(_ row: ToolRow) {
         // Seeding the fields must not look like a user edit.
@@ -816,32 +805,48 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Loads endpoint facts for the popover tiles' OpenRouter models, reusing
-    /// the editor's one-hour cache. No key or any fetch failure leaves the
-    /// provider line off; it is never an error in the popover.
-    func loadTileEndpoints(_ modelIDs: [String]) {
-        let wanted = Set(modelIDs.filter { $0.contains("/") })
-        guard !wanted.isEmpty, let key = currentKey(), isUsableAPIKey(key) else { return }
-        for modelID in wanted {
-            if let cached = endpointsCache[modelID],
-               Date().timeIntervalSince(cached.fetchedAt) < 60 * 60 {
-                tileEndpoints[modelID] = cached.endpoints
-                continue
+    /// The upstream provider that served pi's most recent OpenRouter generation,
+    /// read from the newest pi session transcript and `GET /generation`. Only pi
+    /// records the generation id, so only its tile gets this line. No key, no
+    /// session, a non-OpenRouter last turn, or any failure leaves it off.
+    func loadLastProvider() {
+        guard let key = currentKey(), isUsableAPIKey(key) else {
+            lastProviderByTool.removeValue(forKey: "pi")
+            return
+        }
+        let sessionsDir = paths.piSessions
+        Task { [weak self] in
+            // Reading and scanning the newest transcript is off the main actor:
+            // a session can be tens of megabytes, and this runs on popover open.
+            let generationID = await Task.detached(priority: .utility) { () -> String? in
+                guard let file = latestPiSessionFile(in: sessionsDir),
+                      let transcript = try? ConfigFile.read(file) else { return nil }
+                return lastPiGenerationID(in: transcript)
+            }.value
+            guard let self else { return }
+            guard let generationID else {
+                // Nothing resolvable (no session, or the last turn was not an
+                // OpenRouter call): drop any stale provider rather than show it.
+                self.lastProviderByTool.removeValue(forKey: "pi")
+                return
             }
-            // One fetch per model at a time; a re-render must not fan out tasks.
-            guard tileEndpointsInFlight.insert(modelID).inserted else { continue }
-            Task { [weak self] in
-                guard let self else { return }
-                defer { self.tileEndpointsInFlight.remove(modelID) }
-                // A failure is not cached: caching an empty result would hide the
-                // line (and blank the editor's shared cache) for a full hour.
-                guard let fetched = try? await OpenRouter.modelEndpoints(modelID: modelID, apiKey: key) else { return }
-                self.endpointsCache[modelID] = (fetchedAt: Date(), endpoints: fetched)
-                self.tileEndpoints[modelID] = fetched
+            if generationID == self.lastPiGeneration?.id {
+                if let provider = self.lastPiGeneration?.provider { self.lastProviderByTool["pi"] = provider }
+                return
             }
+            self.pendingGenerationID = generationID
+            guard let provider = try? await OpenRouter.generationProvider(id: generationID, apiKey: key) else {
+                // A newer turn may have superseded this one; only clear when it has not.
+                if self.pendingGenerationID == generationID { self.lastProviderByTool.removeValue(forKey: "pi") }
+                return
+            }
+            // A late reply for a generation a newer open has since replaced must
+            // not overwrite the current provider.
+            guard self.pendingGenerationID == generationID else { return }
+            self.lastPiGeneration = (id: generationID, provider: provider)
+            self.lastProviderByTool["pi"] = provider
         }
     }
-
     /// Writes the current provider/model to the harness. A no-op when the pair is
     /// what the harness already has, so opening the editor never rewrites the
     /// file, and an empty or partially seeded pair is never written.
@@ -1176,12 +1181,6 @@ struct PopoverView: View {
             added: Set(state.config.addedHarnesses),
             failed: state.rowErrors)
         let failed = HarnessTiles.failedCount(rows: state.rows, failed: state.rowErrors)
-        // The OpenRouter models currently on screen, so the provider line can be
-        // loaded once they exist (discovery completes after the popover shows).
-        let tileModels = visible.compactMap { row -> String? in
-            if case .configured(let ref) = row.state, ref.provider == "openrouter" { return ref.model }
-            return nil
-        }
         return VStack(alignment: .leading, spacing: 8) {
             if state.isDiscovering || !state.hasCompletedDiscovery {
                 // Discovery is asynchronous; while it is in flight — or before
@@ -1211,9 +1210,6 @@ struct PopoverView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .task(id: tileModels) {
-            state.loadTileEndpoints(tileModels)
-        }
     }
 
     private func tile(_ row: ToolRow) -> some View {
@@ -1236,12 +1232,10 @@ struct PopoverView: View {
                     Text(rates).font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
-                // Which upstream providers serve this model, from the same
-                // endpoints fetch the editor uses (cached one hour).
-                if case .configured(let ref) = row.state, ref.provider == "openrouter",
-                   let endpoints = state.tileEndpoints[ref.model],
-                   let names = formatProviderNames(endpoints) {
-                    Text(names).font(.caption2).foregroundStyle(.secondary)
+                // The upstream provider that actually served the last request,
+                // resolved from the pi session's OpenRouter generation id.
+                if let provider = state.lastProviderByTool[row.id] {
+                    Text("via \(provider)").font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 }
             }

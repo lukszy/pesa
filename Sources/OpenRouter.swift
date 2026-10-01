@@ -363,6 +363,19 @@ enum OpenRouter {
         return body
     }
 
+    /// The upstream provider that served one generation, from
+    /// `GET /api/v1/generation?id=`. OpenRouter authorises by the key that made
+    /// the request, so a different key or an unknown id throws.
+    static func generationProvider(id: String, apiKey: String) async throws -> String {
+        let body = try await get("https://openrouter.ai/api/v1/generation?id=\(id)", apiKey: apiKey)
+        guard let root = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let data = root["data"] as? [String: Any],
+              let provider = data["provider_name"] as? String, !provider.isEmpty else {
+            throw OpenRouterError.missingField("provider_name")
+        }
+        return provider
+    }
+
     /// The live per-provider facts for one model. The model id is split on the
     /// **first** `/` only, so ids that themselves contain a slash
     /// (`deepseek/deepseek-v4.1-flash`) keep their tail. pi's `~` alias prefix

@@ -743,27 +743,22 @@ enum SelfTest {
                                                completionPricePerToken: nil,
                                                contextLength: 4096)) == nil)
 
-            // The tile's provider line: distinct names, capped at three plus a
-            // remainder count; a provider serving two quantization tags is one.
-            let ep: (String) -> EndpointInfo = { name in
-                EndpointInfo(providerSlug: name.lowercased(), providerName: name,
-                             promptPricePerToken: nil, completionPricePerToken: nil,
-                             throughputP50: nil, latencyP50: nil, contextLength: nil,
-                             quantization: nil, zdr: false,
-                             privacyPolicyURL: nil, termsOfServiceURL: nil)
-            }
-            check("provider names render distinct names",
-                  formatProviderNames([ep("Morph"), ep("Fireworks")]) == "Morph · Fireworks")
-            check("a provider repeated across quantizations is named once",
-                  formatProviderNames([ep("Google"), ep("Google"), ep("Groq")]) == "Google · Groq")
-            check("more than three providers collapse to a count",
-                  formatProviderNames([ep("A"), ep("B"), ep("C"), ep("D"), ep("E")]) == "A · B · C · +2")
-            check("exactly three providers show no remainder",
-                  formatProviderNames([ep("A"), ep("B"), ep("C")]) == "A · B · C")
-            check("four providers add a single remainder",
-                  formatProviderNames([ep("A"), ep("B"), ep("C"), ep("D")]) == "A · B · C · +1")
-            check("no endpoints render no provider line",
-                  formatProviderNames([]) == nil)
+            // The pi tile's "last provider" comes from the newest assistant
+            // turn's generation id. A newer non-OpenRouter turn returns nil
+            // rather than showing a stale provider.
+            let transcript = """
+            {"message":{"role":"assistant","provider":"openrouter","responseId":"gen-1"}}
+            {"message":{"role":"assistant","provider":"openrouter","responseId":"gen-2"}}
+            """
+            check("the last assistant generation id is found",
+                  lastPiGenerationID(in: transcript) == "gen-2")
+            check("a newer non-OpenRouter turn yields no id",
+                  lastPiGenerationID(in: transcript + "\n"
+                      + #"{"message":{"role":"assistant","provider":"anthropic","responseId":"msg_x"}}"#) == nil)
+            check("an assistant turn with no generation id yields none",
+                  lastPiGenerationID(in: #"{"message":{"role":"assistant","provider":"openrouter"}}"#) == nil)
+            check("a transcript with no assistant turn yields none",
+                  lastPiGenerationID(in: "not json\n{\"message\":{\"role\":\"user\"}}") == nil)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }

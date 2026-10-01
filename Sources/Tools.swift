@@ -364,3 +364,40 @@ private func jsonObject(_ path: String) throws -> [String: Any]? {
         throw ConfigError.malformed(path, "\(error)")
     }
 }
+
+// MARK: - pi session ledger
+
+/// The most recently modified pi session transcript under `directory`, or nil.
+/// pi nests sessions one level per project cwd; only `.jsonl` files count.
+func latestPiSessionFile(in directory: String) -> String? {
+    let fm = FileManager.default
+    guard let projects = try? fm.contentsOfDirectory(atPath: directory) else { return nil }
+    var newest: (path: String, mtime: Date)?
+    for project in projects {
+        let projectDir = "\(directory)/\(project)"
+        guard let files = try? fm.contentsOfDirectory(atPath: projectDir) else { continue }
+        for file in files where file.hasSuffix(".jsonl") {
+            let path = "\(projectDir)/\(file)"
+            guard let mtime = (try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { continue }
+            if newest == nil || mtime > newest!.mtime { newest = (path, mtime) }
+        }
+    }
+    return newest?.path
+}
+
+/// The OpenRouter generation id of the newest assistant turn in a pi session
+/// transcript, or nil when the newest turn is not an OpenRouter call (or there
+/// is none). Pure, so the transcript scan is testable without a session file.
+func lastPiGenerationID(in transcript: String) -> String? {
+    for line in transcript.split(separator: "\n").reversed() {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+              let message = object["message"] as? [String: Any],
+              message["role"] as? String == "assistant" else { continue }
+        // The newest assistant turn decides: if it was not an OpenRouter call
+        // there is no generation to resolve, and an older turn must not show.
+        guard message["provider"] as? String == "openrouter",
+              let id = message["responseId"] as? String, id.hasPrefix("gen-") else { return nil }
+        return id
+    }
+    return nil
+}

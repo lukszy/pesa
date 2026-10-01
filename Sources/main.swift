@@ -166,6 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // actor afterwards, so it cannot delay the popover appearing.
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            // Resolves the provider pi last used, from its newest session.
+            state.loadLastProvider()
             Task { await state.discoverProviders() }
         }
     }
