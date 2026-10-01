@@ -110,9 +110,10 @@ menu bar presentation, and the low-balance threshold.
 
 The window is an app-owned, resizable Settings window (sidebar: **General**,
 **API Key**, **Menu Bar**, **Agent Harnesses**, **Alerts**, **About**), opened
-with ⌘, or from the status item's right-click menu. The model editor is the
-Agent Harnesses detail pane: a change is written to the harness immediately,
-with no Set button.
+with ⌘, or from the status item's right-click menu. Each harness row has an
+**Open config…** link that opens that harness's config file in its default
+application. The model editor is the Agent Harnesses detail pane: a change is
+written to the harness immediately, with no Set button.
 
 ## Not implemented
 

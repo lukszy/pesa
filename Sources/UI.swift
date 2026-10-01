@@ -687,6 +687,29 @@ final class AppState: ObservableObject {
         return CatalogCache.details[id]
     }
 
+    /// The primary config file Pesa reads and writes a harness's model in, shown
+    /// as the harness row's "Open config…" link. nil for an unknown harness.
+    func configFilePath(for adapterID: String) -> String? {
+        switch adapterID {
+        case "pi": return paths.piSettings
+        case "opencode": return paths.opencodeConfig
+        case "hermes": return paths.hermesConfig
+        default: return nil
+        }
+    }
+
+    /// True when that file exists, so the link is offered only when it can open.
+    func configFileExists(for adapterID: String) -> Bool {
+        guard let path = configFilePath(for: adapterID) else { return false }
+        return FileManager.default.fileExists(atPath: path)
+    }
+
+    /// Opens the harness's config file in its default application.
+    func openConfigFile(for adapterID: String) {
+        guard let path = configFilePath(for: adapterID) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
     func setModel(_ ref: ToolModelRef, for adapterID: String) {
         guard let adapter = adaptersByID[adapterID] else { return }
         do {
@@ -1777,6 +1800,13 @@ struct SettingsView: View {
             Spacer()
             Toggle("", isOn: addedBinding(for: row.id))
                 .labelsHidden()
+            // Opens the harness's own config file in its default application.
+            // Offered only when the file exists.
+            if state.configFileExists(for: row.id) {
+                Button("Open config…") {
+                    state.openConfigFile(for: row.id)
+                }
+            }
             // An unreadable harness has no model to edit, so it offers no
             // Configure button; its error above explains why.
             if state.rowErrors[row.id] == nil {
