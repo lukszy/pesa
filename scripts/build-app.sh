@@ -6,9 +6,10 @@ cd "$(dirname "$0")/.."
 ./scripts/build.sh
 
 rm -rf Pesa.app
-mkdir -p Pesa.app/Contents/MacOS
+mkdir -p Pesa.app/Contents/MacOS Pesa.app/Contents/Resources
 cp .build/Pesa Pesa.app/Contents/MacOS/Pesa
 cp Resources/Info.plist Pesa.app/Contents/Info.plist
+cp Resources/AppIcon.icns Pesa.app/Contents/Resources/AppIcon.icns
 # Prefer a caller-provided identity, then the stable default, else fall back to
 # ad-hoc so a fresh machine still builds. `find-identity -p codesigning` lists an
 # untrusted identity too (CSSMERR_TP_NOT_TRUSTED), which is exactly what

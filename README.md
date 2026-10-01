@@ -168,9 +168,14 @@ open Pesa.app
 `build.sh` compiles every file in `Sources/` directly with `swiftc`. SwiftPM is
 not used because `swift package` cannot link its own manifest against
 `PackageDescription` on a CLT-only install, and XCTest is not shipped in the
-CLT toolchain. `build-app.sh` copies the binary and `Resources/Info.plist` into
-the bundle and signs it with the stable identity below when it is present in the
-signing keychain, and ad-hoc with `codesign -s -` otherwise.
+CLT toolchain. `build-app.sh` copies the binary, `Resources/Info.plist` and
+`Resources/AppIcon.icns` into the bundle and signs it with the stable identity
+below when it is present in the signing keychain, and ad-hoc with
+`codesign -s -` otherwise.
+
+The app icon is generated from the 1024×1024 master with
+`./scripts/make-icon.sh` (uses `sips` + `iconutil`; the result is committed, so
+this is only needed when `Resources/logo_1024x1024.png` changes).
 
 ### Stable signing identity
 
