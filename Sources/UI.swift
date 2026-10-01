@@ -197,6 +197,16 @@ func formatModelDetail(_ detail: ModelDetail) -> String? {
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
+/// The input/output base rates alone, e.g. `$3.00/M in · $15.00/M out`, or nil
+/// when neither price is known. The popover tile shows these without the
+/// context window, which stays in the editor's `formatModelDetail` line.
+func formatModelRates(_ detail: ModelDetail) -> String? {
+    var parts: [String] = []
+    if let prompt = detail.promptPricePerToken { parts.append("\(formatPerMillionTokens(prompt))/M in") }
+    if let completion = detail.completionPricePerToken { parts.append("\(formatPerMillionTokens(completion))/M out") }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
 /// What the menu bar status item renders. Pure, so the behaviour a user would
 /// otherwise have to observe by eye is testable. `StatusItemController` renders
 /// the result.
@@ -1161,6 +1171,14 @@ struct PopoverView: View {
                 }
                 Text(formatHarnessModel(row.state)).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
+                // Base in/out rates from the OpenRouter catalog, when the model
+                // is one (only OpenRouter ids are in the cached `/models` map).
+                if case .configured(let ref) = row.state, ref.provider == "openrouter",
+                   let detail = state.modelDetail(for: ref.model),
+                   let rates = formatModelRates(detail) {
+                    Text(rates).font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)

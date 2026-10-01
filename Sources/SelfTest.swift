@@ -727,6 +727,21 @@ enum SelfTest {
             check("a zero price is still valid, not rejected",
                   zero["free/model"]?.promptPricePerToken == 0
                       && zero["free/model"]?.completionPricePerToken == 0)
+
+            // The popover tile's rate line: both prices, one, or none.
+            let rates = ModelDetail(promptPricePerToken: 0.000003,
+                                    completionPricePerToken: 0.000015,
+                                    contextLength: 200000)
+            check("both rates render in and out",
+                  formatModelRates(rates) == "$3.00/M in · $15.00/M out")
+            check("a missing completion rate shows only the input rate",
+                  formatModelRates(ModelDetail(promptPricePerToken: 0.000003,
+                                               completionPricePerToken: nil,
+                                               contextLength: nil)) == "$3.00/M in")
+            check("no prices render no rate line",
+                  formatModelRates(ModelDetail(promptPricePerToken: nil,
+                                               completionPricePerToken: nil,
+                                               contextLength: 4096)) == nil)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }
