@@ -1,4 +1,5 @@
 .superpowers/
 .build/
 Pesa.app/
+dist/
 ./docs

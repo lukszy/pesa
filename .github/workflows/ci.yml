@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -23,3 +24,13 @@ jobs:
 
       - name: Assemble app bundle
         run: ./scripts/build-app.sh
+
+      - name: Package zip + dmg
+        run: ./scripts/package-app.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pesa-macos
+          path: dist/*
+          if-no-files-found: error

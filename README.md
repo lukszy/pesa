@@ -162,16 +162,19 @@ Command Line Tools only — no Xcode project, no SwiftPM, no XCTest.
 ```sh
 ./scripts/build.sh          # swiftc -> .build/Pesa
 ./scripts/build-app.sh      # build + assemble + sign Pesa.app
+./scripts/package-app.sh    # zip + dmg installer under dist/
 open Pesa.app
 ```
 
 `build.sh` compiles every file in `Sources/` directly with `swiftc`. SwiftPM is
 not used because `swift package` cannot link its own manifest against
 `PackageDescription` on a CLT-only install, and XCTest is not shipped in the
-CLT toolchain. `build-app.sh` copies the binary, `Resources/Info.plist` and
-`Resources/AppIcon.icns` into the bundle and signs it with the stable identity
-below when it is present in the signing keychain, and ad-hoc with
-`codesign -s -` otherwise.
+CLT toolchain. `build-app.sh` copies the binary, `Resources/Info.plist`, the
+icons and `Resources/MenuBarIcon*.png` into the bundle and signs it with the
+stable identity below when it is present in the signing keychain, and ad-hoc
+with `codesign -s -` otherwise. `package-app.sh` writes
+`dist/Pesa-<version>-<arch>.zip` (via `ditto`, so the signature survives) and a
+drag-to-Applications `.dmg`. CI runs both and uploads them as build artifacts.
 
 The app icon and the menu bar icon are generated from the 1024×1024 master with
 `./scripts/make-icon.sh` (uses `sips` + `iconutil`; the results are committed,
