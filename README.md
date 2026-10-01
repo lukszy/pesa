@@ -173,9 +173,11 @@ CLT toolchain. `build-app.sh` copies the binary, `Resources/Info.plist` and
 below when it is present in the signing keychain, and ad-hoc with
 `codesign -s -` otherwise.
 
-The app icon is generated from the 1024×1024 master with
-`./scripts/make-icon.sh` (uses `sips` + `iconutil`; the result is committed, so
-this is only needed when `Resources/logo_1024x1024.png` changes).
+The app icon and the menu bar icon are generated from the 1024×1024 master with
+`./scripts/make-icon.sh` (uses `sips` + `iconutil`; the results are committed,
+so this is only needed when `Resources/logo_1024x1024.png` changes). It writes
+`Resources/AppIcon.icns` and the monochrome template `Resources/MenuBarIcon.png`
+(`@2x` alongside), which `build-app.sh` copies into the bundle.
 
 ### Stable signing identity
 
@@ -308,6 +310,11 @@ The **low-balance threshold**, when the alert is enabled, also tints the menu
 bar text orange while the fetched balance sits below it — the redacted `...$`
 included. Exactly at the threshold is not below it, and a failed fetch never
 tints.
+
+The menu bar icon is a monochrome **template** image (`Resources/MenuBarIcon.png`,
+18pt with an `@2x` variant), so macOS tints it for the menu bar's light/dark and
+highlighted states. Running the raw `.build/Pesa` binary, which has no bundle
+resources, falls back to the `dollarsign.circle` SF Symbol.
 
 ### Low-balance alert
 

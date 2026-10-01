@@ -4,13 +4,22 @@ import SwiftUI
 
 var statusItem: NSStatusItem?
 
+/// The status item image: the bundled monochrome `MenuBarIcon` template when it
+/// is present (the `.app` bundle), else the SF Symbol. A template is drawn in
+/// the menu bar's own tint, so it follows light/dark and the highlighted state;
+/// the raw `.build/` binary has no resources and falls back to the symbol.
+func makeMenuBarImage(symbolFallback: String) -> NSImage? {
+    if let icon = NSImage(named: "MenuBarIcon") {
+        icon.isTemplate = true
+        return icon
+    }
+    return NSImage(systemSymbolName: symbolFallback, accessibilityDescription: "Pesa")
+}
+
 func makeStatusItem() -> NSStatusItem {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     if let button = item.button {
-        button.image = NSImage(
-            systemSymbolName: "dollarsign.circle",
-            accessibilityDescription: "Pesa"
-        )
+        button.image = makeMenuBarImage(symbolFallback: "dollarsign.circle")
         button.title = " $0.00"
     }
     return item
@@ -109,9 +118,7 @@ final class StatusItemController: NSObject {
         item.button?.attributedTitle = NSAttributedString(
             string: title,
             attributes: [.foregroundColor: warning ? NSColor.systemOrange : NSColor.labelColor])
-        item.button?.image = presentation.symbol.flatMap {
-            NSImage(systemSymbolName: $0, accessibilityDescription: "Pesa")
-        }
+        item.button?.image = presentation.symbol.flatMap { makeMenuBarImage(symbolFallback: $0) }
     }
 }
 

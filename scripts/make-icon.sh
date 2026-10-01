@@ -31,3 +31,11 @@ done
 
 iconutil -c icns "$SET" -o "$OUT"
 echo "wrote $OUT"
+
+# Menu bar icon: a monochrome template derived from the same master, at the
+# modern 18pt menu bar size (1x + @2x).
+swiftc -O -o "$WORK/make-menubar-icon" scripts/make-menubar-icon.swift
+"$WORK/make-menubar-icon" "$SRC" "$WORK/menubar-1024.png" 70
+sips -z 36 36 "$WORK/menubar-1024.png" --out Resources/MenuBarIcon@2x.png >/dev/null
+sips -z 18 18 "$WORK/menubar-1024.png" --out Resources/MenuBarIcon.png >/dev/null
+echo "wrote Resources/MenuBarIcon.png and Resources/MenuBarIcon@2x.png"
