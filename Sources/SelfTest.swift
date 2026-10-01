@@ -759,6 +759,55 @@ enum SelfTest {
                   lastPiGenerationID(in: #"{"message":{"role":"assistant","provider":"openrouter"}}"#) == nil)
             check("a transcript with no assistant turn yields none",
                   lastPiGenerationID(in: "not json\n{\"message\":{\"role\":\"user\"}}") == nil)
+
+            // Writing the allow-list into pi's models.json: nested set, no-op,
+            // and clear-with-prune while other providers survive.
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Pesa-routing-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(atPath: dir.path, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir.path) }
+            let modelsPath = dir.appendingPathComponent("models.json").path
+            try #"{"providers":{"ollama":{"baseUrl":"http://x","models":[{"id":"m"}]}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+
+            let piObject: (String) throws -> [String: Any]? = { path in
+                try JSONSerialization.jsonObject(with: Data(ConfigFile.read(path).utf8)) as? [String: Any]
+            }
+            let routingOnly: (String) throws -> [String: Any]? = { path in
+                guard let root = try piObject(path),
+                      let providers = root["providers"] as? [String: Any],
+                      let openrouter = providers["openrouter"] as? [String: Any],
+                      let overrides = openrouter["modelOverrides"] as? [String: Any],
+                      let entry = overrides["deepseek/deepseek-v4.1-flash"] as? [String: Any],
+                      let compat = entry["compat"] as? [String: Any] else { return nil }
+                return compat["openRouterRouting"] as? [String: Any]
+            }
+            let ollamaPresent: (String) throws -> Bool = { path in
+                guard let root = try piObject(path),
+                      let providers = root["providers"] as? [String: Any] else { return false }
+                return providers["ollama"] != nil
+            }
+
+            try setPiProviderOnly(model: "deepseek/deepseek-v4.1-flash", only: ["morph", "fireworks/fp8"], in: modelsPath)
+            let writtenOnly = try routingOnly(modelsPath)?["only"] as? [String]
+            let ollamaAfterWrite = try ollamaPresent(modelsPath)
+            check("pi routing is written and other providers are preserved",
+                  writtenOnly == ["morph", "fireworks/fp8"] && ollamaAfterWrite)
+            let afterWrite = try ConfigFile.read(modelsPath)
+            try setPiProviderOnly(model: "deepseek/deepseek-v4.1-flash", only: ["morph", "fireworks/fp8"], in: modelsPath)
+            let unchanged = try ConfigFile.read(modelsPath)
+            check("an unchanged allow-list does not rewrite the file",
+                  unchanged == afterWrite)
+            try setPiProviderOnly(model: "deepseek/deepseek-v4.1-flash", only: [], in: modelsPath)
+            let clearedRouting = try routingOnly(modelsPath)
+            let ollamaAfterClear = try ollamaPresent(modelsPath)
+            check("clearing removes the routing chain and keeps other content",
+                  clearedRouting == nil && ollamaAfterClear)
+            let afterClear = try ConfigFile.read(modelsPath)
+            try setPiProviderOnly(model: "other/model", only: [], in: modelsPath)
+            let stillSame = try ConfigFile.read(modelsPath)
+            check("clearing an absent override does not rewrite the file",
+                  stillSame == afterClear)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }

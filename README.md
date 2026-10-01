@@ -31,7 +31,8 @@ daemon, and no third-party dependencies.
   known, and the tile shows the provider that served the last request (`via
   Together`; pi only, since it records the OpenRouter generation id).
 - **OpenRouter provider routing** — a live per-provider table (price, speed,
-  ZDR, quantization, privacy links) and a recorded per-model allow-list.
+  ZDR, quantization, privacy links) and a per-model allow-list that Pesa writes
+  into pi's `models.json` so pi routes through only those providers.
 - **Low-balance alert** — opt-in local notification on a crossing below your
   threshold; the menu bar amount also turns orange while below it.
 - **No third-party dependencies** — built directly against AppKit and SwiftUI.
@@ -94,7 +95,8 @@ lives in two places, and the key is never logged. **Save**, **Test key**, and
 Settings live in `~/.pesa-app/settings.json` — plain JSON that, in file key mode,
 contains the API key in plain text. They cover the key and where it is stored,
 the refresh interval, launch at login, the popover harnesses, per-model provider
-allow-lists, menu bar presentation, and the low-balance threshold.
+allow-lists (mirrored into pi's `models.json` as `compat.openRouterRouting.only`),
+menu bar presentation, and the low-balance threshold.
 
 - **Launch at login** needs the `.app` bundle; the raw `.build/` binary reports
   that the bundle is required.

@@ -721,6 +721,9 @@ final class AppState: ObservableObject {
     /// fetch is in flight and after one fails; the editor's base price line is
     /// independent, so a failure never blanks it.
     @Published var editEndpoints: [EndpointInfo] = []
+    /// The last failure writing the allow-list into pi's `models.json`; nil
+    /// after a successful write. Shown in the editor, never swallowed.
+    @Published var piRoutingError: String?
     /// The upstream provider that served each harness's last request, keyed by
     /// harness id. Only pi records an OpenRouter generation id, so only its
     /// entry is ever set. Published so a late fetch re-renders the tile.
@@ -736,6 +739,8 @@ final class AppState: ObservableObject {
         // Seeding the fields must not look like a user edit.
         isConfiguringEditor = true
         defer { isConfiguringEditor = false }
+        // A routing error belongs to the harness last edited, not the new one.
+        piRoutingError = nil
 
         editAdapterID = row.id
         let current: ToolModelRef?
@@ -847,6 +852,20 @@ final class AppState: ObservableObject {
             self.lastProviderByTool["pi"] = provider
         }
     }
+    /// Mirrors the per-model OpenRouter allow-list into pi's `models.json` so pi
+    /// routes through only the ticked providers. Runs only while the pi harness
+    /// is being edited; other harnesses keep recording the list only. A no-op
+    /// for a model with no allow-list (all providers are allowed).
+    func syncProviderOnlyToPi(model: String) {
+        guard editAdapterID == "pi" else { return }
+        do {
+            try setPiProviderOnly(model: model, only: config.providerOnly[model] ?? [], in: paths.piModels)
+            piRoutingError = nil
+        } catch {
+            piRoutingError = "Could not update pi's provider routing: \(describe(error))"
+        }
+    }
+
     /// Writes the current provider/model to the harness. A no-op when the pair is
     /// what the harness already has, so opening the editor never rewrites the
     /// file, and an empty or partially seeded pair is never written.
@@ -1377,8 +1396,13 @@ struct ModelEditorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Providers").font(.caption).bold()
                 providerTable
-                Text("Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
+                Text(state.editAdapterID == "pi"
+                     ? "Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json."
+                     : "Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
                     .font(.caption2).foregroundStyle(.secondary)
+                if let error = state.piRoutingError {
+                    Text(error).font(.caption2).foregroundStyle(.red)
+                }
             }
         }
     }
@@ -1502,6 +1526,7 @@ struct ModelEditorView: View {
                 } else {
                     state.config.providerOnly[state.editModel] = all.filter { checked.contains($0) }
                 }
+                state.syncProviderOnlyToPi(model: state.editModel)
             })
     }
 

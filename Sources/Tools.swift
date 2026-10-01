@@ -401,3 +401,67 @@ func lastPiGenerationID(in transcript: String) -> String? {
     }
     return nil
 }
+
+/// Sets (or clears) the OpenRouter provider allow-list for one model in pi's
+/// `models.json`, at `providers.openrouter.modelOverrides.<model>.compat.
+/// openRouterRouting.only`, so pi actually routes through those providers.
+/// An empty list removes the key and prunes the containers it leaves empty; a
+/// no-op leaves the file untouched.
+///
+/// ponytail: the one config edit that parses and re-serializes instead of
+/// byte-preserving. The target is a nested object/array the regex primitives
+/// cannot address, and models.json is plain JSON with no comments, so the
+/// round-trip loses only key order/formatting — never data. The pre-write bytes
+/// are still backed up to `<path>.bak`.
+func setPiProviderOnly(model: String, only: [String], in path: String) throws {
+    let exists = FileManager.default.fileExists(atPath: path)
+    var root: [String: Any] = [:]
+    if exists {
+        let text = try ConfigFile.read(path)
+        guard let object = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else {
+            throw ConfigError.malformed(path, "top level is not an object")
+        }
+        root = object
+    }
+
+    var providers = root["providers"] as? [String: Any] ?? [:]
+    var openrouter = providers["openrouter"] as? [String: Any] ?? [:]
+    var overrides = openrouter["modelOverrides"] as? [String: Any] ?? [:]
+    var entry = overrides[model] as? [String: Any] ?? [:]
+    var compat = entry["compat"] as? [String: Any] ?? [:]
+    var routing = compat["openRouterRouting"] as? [String: Any] ?? [:]
+
+    // No-op guard: do not rewrite (and reformat) the file when nothing changes.
+    if only.isEmpty {
+        guard routing["only"] != nil else { return }
+    } else if routing["only"] as? [String] == only {
+        return
+    }
+
+    if only.isEmpty {
+        routing.removeValue(forKey: "only")
+    } else {
+        routing["only"] = only
+    }
+
+    // Rebuild bottom-up, pruning any container the edit leaves empty.
+    if routing.isEmpty { compat.removeValue(forKey: "openRouterRouting") } else { compat["openRouterRouting"] = routing }
+    if compat.isEmpty { entry.removeValue(forKey: "compat") } else { entry["compat"] = compat }
+    if entry.isEmpty { overrides.removeValue(forKey: model) } else { overrides[model] = entry }
+    if overrides.isEmpty { openrouter.removeValue(forKey: "modelOverrides") } else { openrouter["modelOverrides"] = overrides }
+    if openrouter.isEmpty { providers.removeValue(forKey: "openrouter") } else { providers["openrouter"] = openrouter }
+    if providers.isEmpty { root.removeValue(forKey: "providers") } else { root["providers"] = providers }
+
+    let data = try JSONSerialization.data(withJSONObject: root,
+                                          options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    let text = String(decoding: data, as: UTF8.self) + "\n"
+    if exists {
+        try ConfigFile.backup(path)
+        try ConfigFile.atomicWrite(text, to: path)
+    } else {
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        // A fresh models.json can hold an apiKey; keep it owner-only like the
+        // app's own settings file rather than the ~0644 default.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
+}
