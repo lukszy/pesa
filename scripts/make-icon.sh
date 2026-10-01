@@ -29,6 +29,10 @@ swiftc -O -o "$WORK/normalize-app-icon" scripts/normalize-app-icon.swift
 "$WORK/normalize-app-icon" "$SRC" "$WORK/appicon-1024.png" 0.73
 APP_SRC="$WORK/appicon-1024.png"
 
+# Same artwork for the README hero, so the logo fills its box there too.
+sips -z 512 512 "$APP_SRC" --out Resources/logo.png >/dev/null
+echo "wrote Resources/logo.png"
+
 # iconutil expects exactly these names; @2x is the retina variant.
 for n in 16 32 128 256 512; do
   sips -z "$n" "$n" "$APP_SRC" --out "$SET/icon_${n}x${n}.png" >/dev/null

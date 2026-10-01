@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="Resources/logo.svg" alt="Pesa logo" width="128" height="128">
+  <img src="Resources/logo.png" alt="Pesa logo" width="128" height="128">
   <h1>Pesa</h1>
   <p><strong>OpenRouter balance and agent-model control, in the macOS menu bar.</strong></p>
   <p>
