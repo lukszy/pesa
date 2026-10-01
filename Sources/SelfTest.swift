@@ -742,6 +742,28 @@ enum SelfTest {
                   formatModelRates(ModelDetail(promptPricePerToken: nil,
                                                completionPricePerToken: nil,
                                                contextLength: 4096)) == nil)
+
+            // The tile's provider line: distinct names, capped at three plus a
+            // remainder count; a provider serving two quantization tags is one.
+            let ep: (String) -> EndpointInfo = { name in
+                EndpointInfo(providerSlug: name.lowercased(), providerName: name,
+                             promptPricePerToken: nil, completionPricePerToken: nil,
+                             throughputP50: nil, latencyP50: nil, contextLength: nil,
+                             quantization: nil, zdr: false,
+                             privacyPolicyURL: nil, termsOfServiceURL: nil)
+            }
+            check("provider names render distinct names",
+                  formatProviderNames([ep("Morph"), ep("Fireworks")]) == "Morph · Fireworks")
+            check("a provider repeated across quantizations is named once",
+                  formatProviderNames([ep("Google"), ep("Google"), ep("Groq")]) == "Google · Groq")
+            check("more than three providers collapse to a count",
+                  formatProviderNames([ep("A"), ep("B"), ep("C"), ep("D"), ep("E")]) == "A · B · C · +2")
+            check("exactly three providers show no remainder",
+                  formatProviderNames([ep("A"), ep("B"), ep("C")]) == "A · B · C")
+            check("four providers add a single remainder",
+                  formatProviderNames([ep("A"), ep("B"), ep("C"), ep("D")]) == "A · B · C · +1")
+            check("no endpoints render no provider line",
+                  formatProviderNames([]) == nil)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }

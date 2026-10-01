@@ -28,7 +28,7 @@ daemon, and no third-party dependencies.
 - **Model editing** — a searchable picker (or free text) writes the chosen
   provider/model back to that harness's own config, after a `.bak` backup. The
   popover tile and the editor show the model's base OpenRouter in/out rates when
-  known.
+  known, and the tile lists the upstream providers serving it.
 - **OpenRouter provider routing** — a live per-provider table (price, speed,
   ZDR, quantization, privacy links) and a recorded per-model allow-list.
 - **Low-balance alert** — opt-in local notification on a crossing below your
