@@ -1725,8 +1725,12 @@ struct SettingsView: View {
                 settingToggle("Notify when the balance falls below",
                               isOn: Binding(get: { state.config.notifyBelowEnabled },
                                             set: { state.setAlertEnabled($0) }))
+                // The app formats money with String(format: "$%.2f"), so the field
+                // must read `5.5` as 5.5 regardless of the system locale's decimal
+                // separator (e.g. en_PL treats `.` as a grouping separator).
                 TextField("Threshold ($)", value: $state.config.notifyBelowAmount,
-                          format: .number)
+                          format: .number.precision(.fractionLength(0...2))
+                              .locale(Locale(identifier: "en_US")))
             }
             Section {
                 Text("Notification permission: \(state.authorizationStatusText)")
