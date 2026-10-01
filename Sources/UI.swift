@@ -1745,6 +1745,11 @@ struct SettingsView: View {
             Section {
                 LabeledContent("Version", value: appVersion)
                 LabeledContent("Provider", value: "OpenRouter")
+                LabeledContent("Author", value: "Lukasz Szymanski")
+                LabeledContent("Contact") {
+                    Link("hello@lszymanski.dev",
+                         destination: URL(string: "mailto:hello@lszymanski.dev")!)
+                }
             }
             Section {
                 Button("Buy credits…") {
