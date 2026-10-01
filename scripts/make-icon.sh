@@ -22,11 +22,18 @@ trap 'rm -rf "$WORK"' EXIT
 SET="$WORK/AppIcon.iconset"
 mkdir -p "$SET"
 
+# The master has transparent padding, which leaves the shape small in
+# Finder/Spotlight. Scale the artwork to fill ~73% of the grid first (macOS
+# icons sit around 80% with their shadow), then derive every size.
+swiftc -O -o "$WORK/normalize-app-icon" scripts/normalize-app-icon.swift
+"$WORK/normalize-app-icon" "$SRC" "$WORK/appicon-1024.png" 0.73
+APP_SRC="$WORK/appicon-1024.png"
+
 # iconutil expects exactly these names; @2x is the retina variant.
 for n in 16 32 128 256 512; do
-  sips -z "$n" "$n" "$SRC" --out "$SET/icon_${n}x${n}.png" >/dev/null
+  sips -z "$n" "$n" "$APP_SRC" --out "$SET/icon_${n}x${n}.png" >/dev/null
   d=$((n * 2))
-  sips -z "$d" "$d" "$SRC" --out "$SET/icon_${n}x${n}@2x.png" >/dev/null
+  sips -z "$d" "$d" "$APP_SRC" --out "$SET/icon_${n}x${n}@2x.png" >/dev/null
 done
 
 iconutil -c icns "$SET" -o "$OUT"
