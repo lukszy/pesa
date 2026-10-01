@@ -1,23 +1,30 @@
-# AGENTS.md — Opencode Minimal Loop
+# AGENTS.md
 
-These rules are loaded by opencode before loop work.
+Conventions for agents working in this repo — the **Pesa** macOS menu-bar app
+(Swift, Command Line Tools only: no Xcode project, no SwiftPM, no XCTest).
 
-## Loop Mode
+## Build & test
 
-- Start in L1 report-only mode.
-- Read `STATE.md` before any triage.
-- Update `STATE.md` after every loop run.
-- Do not edit source code until the human explicitly enables L2.
+```sh
+./scripts/build.sh          # swiftc -> .build/Pesa
+./.build/Pesa --selftest    # assert-based suite; exits 0 on success
+./scripts/build-app.sh      # assemble + sign Pesa.app
+./scripts/package-app.sh    # zip + dmg under dist/
+```
 
 ## Safety
 
 - Never push or merge without human approval.
-- Never edit `.env`, `.env.*`, `auth/`, `payments/`, `secrets/`, or `credentials/`.
+- Never edit `.env`, `.env.*`, `auth/`, `payments/`, `secrets/`, or
+  `credentials/`, or any real tool config under `~/.pi`, `~/.config/opencode`,
+  `~/.hermes`, or `~/.pesa-app`. The selftest uses temp-dir fixtures only.
 - Use a git worktree for every code-changing attempt.
 - Max 3 fix attempts per item; escalate after that.
 
 ## Verification
 
-- For L2+ changes, dispatch a verifier sub-agent after implementation.
-- Run the project's documented tests before proposing a fix.
-- Record test evidence in `STATE.md`.
+- Run `./scripts/build.sh` and `./.build/Pesa --selftest` before proposing a
+  change; every check must pass.
+- For source changes, dispatch an independent verifier sub-agent after
+  implementation (it must try to reject, not confirm).
+- Report exact evidence: exit codes and PASS/FAIL counts.
