@@ -710,6 +710,13 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
+    /// True when pi's agent directory exists, so the provider table can say
+    /// whether an allow-list is written to pi or only recorded by this app.
+    var piRoutingAvailable: Bool {
+        let directory = URL(fileURLWithPath: paths.piModels).deletingLastPathComponent().path
+        return FileManager.default.fileExists(atPath: directory)
+    }
+
     func setModel(_ ref: ToolModelRef, for adapterID: String) {
         guard let adapter = adaptersByID[adapterID] else { return }
         do {
@@ -798,6 +805,8 @@ final class AppState: ObservableObject {
     /// non-OpenRouter provider, or any fetch failure leaves `editEndpoints`
     /// empty rather than failing the editor.
     private func refreshEditEndpoints() {
+        // A new model/provider selection invalidates the previous routing error.
+        piRoutingError = nil
         guard editProvider == "openrouter" else {
             editEndpoints = []
             return
@@ -882,6 +891,11 @@ final class AppState: ObservableObject {
     /// the allow-list is a per-model preference and pi is its consumer. An empty
     /// list removes the override (all providers are allowed).
     func syncProviderOnlyToPi(model: String) {
+        guard piRoutingAvailable else {
+            // pi is not installed: nothing to write, and no error to show.
+            piRoutingError = nil
+            return
+        }
         do {
             try setPiProviderOnly(model: model, only: config.providerOnly[model] ?? [], in: paths.piModels)
             piRoutingError = nil
@@ -1428,7 +1442,9 @@ struct ModelEditorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Providers").font(.caption).bold()
                 providerTable
-                Text("Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json.")
+                Text(state.piRoutingAvailable
+                     ? "Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json."
+                     : "Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let error = state.piRoutingError {
                     Text(error).font(.caption2).foregroundStyle(.red)
