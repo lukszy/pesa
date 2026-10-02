@@ -811,6 +811,7 @@ final class AppState: ObservableObject {
         if let cached = endpointsCache[modelID],
            Date().timeIntervalSince(cached.fetchedAt) < 60 * 60 {
             editEndpoints = cached.endpoints
+            reconcileProviderOnlyToPi(model: modelID)
             return
         }
         guard let key = currentKey(), isUsableAPIKey(key) else {
@@ -830,6 +831,7 @@ final class AppState: ObservableObject {
             guard self.editProvider == "openrouter",
                   self.editModel.trimmingCharacters(in: .whitespacesAndNewlines) == modelID else { return }
             self.editEndpoints = fetched
+            self.reconcileProviderOnlyToPi(model: modelID)
         }
     }
 
@@ -876,17 +878,24 @@ final class AppState: ObservableObject {
         }
     }
     /// Mirrors the per-model OpenRouter allow-list into pi's `models.json` so pi
-    /// routes through only the ticked providers. Runs only while the pi harness
-    /// is being edited; other harnesses keep recording the list only. A no-op
-    /// for a model with no allow-list (all providers are allowed).
+    /// routes through only the ticked providers. Runs for any harness's editor:
+    /// the allow-list is a per-model preference and pi is its consumer. An empty
+    /// list removes the override (all providers are allowed).
     func syncProviderOnlyToPi(model: String) {
-        guard editAdapterID == "pi" else { return }
         do {
             try setPiProviderOnly(model: model, only: config.providerOnly[model] ?? [], in: paths.piModels)
             piRoutingError = nil
         } catch {
             piRoutingError = "Could not update pi's provider routing: \(describe(error))"
         }
+    }
+
+    /// Writes pi's routing only when the app holds an actual selection; an empty
+    /// stored list means "all providers" and must never wipe a hand-set `only`
+    /// in pi's config just because the editor was opened.
+    private func reconcileProviderOnlyToPi(model: String) {
+        guard !(config.providerOnly[model] ?? []).isEmpty else { return }
+        syncProviderOnlyToPi(model: model)
     }
 
     /// Writes the current provider/model to the harness. A no-op when the pair is
@@ -1419,9 +1428,7 @@ struct ModelEditorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Providers").font(.caption).bold()
                 providerTable
-                Text(state.editAdapterID == "pi"
-                     ? "Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json."
-                     : "Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
+                Text("Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json.")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let error = state.piRoutingError {
                     Text(error).font(.caption2).foregroundStyle(.red)
