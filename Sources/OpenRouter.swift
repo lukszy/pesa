@@ -81,6 +81,11 @@ struct EndpointInfo: Equatable {
     let zdr: Bool
     let privacyPolicyURL: String?
     let termsOfServiceURL: String?
+    /// The user's allow-list selection for this endpoint. Set only when the
+    /// editor builds its table rows — the cache always carries the default — so
+    /// the "Allow" column can sort by selected/unselected. It is not part of the
+    /// API response.
+    var allowed: Bool = true
 }
 
 /// `Identifiable` and the sort keys the editor's SwiftUI `Table` needs. A
@@ -97,6 +102,8 @@ extension EndpointInfo: Identifiable {
     var zdrOrder: Int { zdr ? 0 : 1 }
     /// Unquantized sorts after a named quantization when ascending.
     var quantOrder: String { quantization ?? "\u{10FFFF}" }
+    /// Allowed providers first when ascending; drives the "Allow" column's sort.
+    var allowedOrder: Int { allowed ? 0 : 1 }
 }
 
 /// One `/models` response: the id/name list the pickers use and the per-model

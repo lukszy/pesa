@@ -704,6 +704,16 @@ final class AppState: ObservableObject {
         return FileManager.default.fileExists(atPath: path)
     }
 
+    /// Opens the edited model's OpenRouter page in the default browser. Only a
+    /// real OpenRouter model id (`author/slug`) has a page; a partial id is a
+    /// no-op rather than a 404 tab.
+    func openModelPage() {
+        let model = editModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard editProvider == "openrouter", model.contains("/"),
+              let url = URL(string: "https://openrouter.ai/\(model)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// Opens the harness's config file in its default application.
     func openConfigFile(for adapterID: String) {
         guard let path = configFilePath(for: adapterID) else { return }
@@ -1351,7 +1361,17 @@ struct ModelEditorView: View {
             providerControl
             // Searchable select: the dropdown filters as you type, and text that
             // matches no catalog model is still accepted as a free-form id.
-            SearchablePicker(options: modelOptions, selection: $state.editModel)
+            HStack(alignment: .center, spacing: 8) {
+                SearchablePicker(options: modelOptions, selection: $state.editModel)
+                if state.editProvider == "openrouter", state.editModel.contains("/") {
+                    Button {
+                        state.openModelPage()
+                    } label: {
+                        Label("OpenRouter page", systemImage: "arrow.up.right.square")
+                    }
+                    .help("Open this model on openrouter.ai")
+                }
+            }
             if let detail = state.modelDetail(for: state.editModel),
                let summary = formatModelDetail(detail) {
                 Text(summary)
@@ -1457,14 +1477,22 @@ struct ModelEditorView: View {
     /// `Table` reflects the order in its headers but leaves re-ordering to the
     /// caller, so the sort happens here.
     private var displayedEndpoints: [EndpointInfo] {
-        state.editEndpoints.sorted(using: sortOrder)
+        // Stamp each row with its allow state so the "Allow" column can sort by
+        // it; the cache's copies keep the default and are never mutated.
+        let checked = checkedSlugs
+        let rows = state.editEndpoints.map { endpoint -> EndpointInfo in
+            var copy = endpoint
+            copy.allowed = checked.contains(endpoint.providerSlug)
+            return copy
+        }
+        return rows.sorted(using: sortOrder)
     }
 
     private var providerTable: some View {
         Table(displayedEndpoints, selection: $hoveredRow, sortOrder: $sortOrder) {
-            // Selection on the left, in the row it applies to. A checkbox is not
-            // a value, so its column is deliberately unsortable.
-            TableColumn("Allow") { endpoint in
+            // Selection on the left, in the row it applies to. Sortable by the
+            // stamped `allowedOrder` (allowed first), not by the checkbox itself.
+            TableColumn("Allow", value: \.allowedOrder) { endpoint in
                 Toggle("", isOn: allowedBinding(for: endpoint.providerSlug))
                     .labelsHidden()
                     .toggleStyle(.checkbox)

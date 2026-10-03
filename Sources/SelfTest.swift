@@ -933,6 +933,13 @@ enum SelfTest {
         check("provider name is a working sort key",
               rows.sorted(using: [KeyPathComparator(\EndpointInfo.providerName)]).map(\.providerName)
                   == ["Alpha", "Beta", "Gamma"])
+        var allowed = endpoint("Allowed", prompt: 1)
+        allowed.allowed = true
+        var blocked = endpoint("Blocked", prompt: 1)
+        blocked.allowed = false
+        check("an allowed endpoint sorts before a disallowed one",
+              [blocked, allowed].sorted(using: [KeyPathComparator(\EndpointInfo.allowedOrder)])
+                  .map(\.providerName) == ["Allowed", "Blocked"])
     }
 
     /// Pins the searchable picker's commit rule: a typed name or id resolves to
