@@ -1,13 +1,22 @@
 <div align="center">
+
   <img src="Resources/logo.png" alt="Pesa logo" width="128" height="128">
+
   <h1>Pesa</h1>
   <p><strong>OpenRouter balance and agent-model control, in the macOS menu bar.</strong></p>
+
   <p>
+
     <img alt="version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue">
+
     <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-black">
+
     <img alt="dependencies none" src="https://img.shields.io/badge/dependencies-none-brightgreen">
+
     <img alt="license not specified" src="https://img.shields.io/badge/license-not%20specified-lightgrey">
+
   </p>
+
 </div>
 
 ## What it is
@@ -17,49 +26,38 @@ lets you read and change the model configured in the coding agents installed on
 your machine. It is a single `LSUIElement` process: no Dock icon, no persistent
 daemon, and no third-party dependencies.
 
+<p align="center">
+
+  <img src="Resources/screenshot.png" alt="Pesa popover showing the OpenRouter balance, usage tiles, and a pi harness" width="360">
+
+</p>
+
 ## Features
 
 - **Live OpenRouter balance** in the menu bar and as the popover headline,
-  refreshed at launch, on a configurable timer, and on demand.
+refreshed at launch, on a configurable timer, and on demand.
 - **Per-key usage tiles** — today, week, and month spend, plus key limit, BYOK,
-  expiry, and free-tier state when those apply.
+expiry, and free-tier state when those apply.
 - **Opt-in agent harnesses** — pi, opencode, and hermes are detected, but only
-  the ones you add appear in the popover.
+the ones you add appear in the popover.
 - **Model editing** — a searchable picker (or free text) writes the chosen
-  provider/model back to that harness's own config, after a `.bak` backup. The
-  popover tile and the editor show the model's base OpenRouter in/out rates when
-  known, and the tile shows the provider that served the last request (`via
-  Together`; pi only, since it records the OpenRouter generation id).
+provider/model back to that harness's own config, after a `.bak` backup. The
+popover tile and the editor show the model's base OpenRouter in/out rates when
+known, and the tile shows the provider that served the last request (`via Together`; pi only, since it records the OpenRouter generation id).
 - **OpenRouter provider routing** — a live per-provider table (price, speed,
-  ZDR, quantization, privacy links) and a per-model allow-list that Pesa writes
-  into pi's `models.json` so pi routes through only those providers.
+ZDR, quantization, privacy links) and a per-model allow-list that Pesa writes
+into pi's `models.json` so pi routes through only those providers.
 - **Low-balance alert** — opt-in local notification on a crossing below your
-  threshold; the menu bar amount also turns orange while below it.
+threshold; the menu bar amount also turns orange while below it.
 - **No third-party dependencies** — built directly against AppKit and SwiftUI.
 
 ## Install
 
 Requires **macOS 13 or later**.
 
-Download `Pesa-<version>-universal.dmg` from the repository's
+Download the `.dmg` for your architecture from the repository's
 [**Releases**](../../releases/latest) page, open it, and drag **Pesa** into
-**Applications**. The build is universal, so it runs natively on both Apple
-Silicon and Intel Macs.
-
-The build is ad-hoc signed and not notarized, so macOS blocks the first launch as
-an "unidentified developer". Right-click the app and choose **Open**, or clear
-the quarantine flag once:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Pesa.app
-```
-
-Building from source (Xcode Command Line Tools only) gives the same result:
-
-```sh
-./scripts/build-app.sh   # swiftc -> Pesa.app
-open Pesa.app
-```
+**Applications**.
 
 ## Supported tools
 
@@ -67,11 +65,13 @@ Pesa reads and writes the model each tool uses, backing the file up to
 `<file>.bak` before every write. Detection finds every installed tool, but only
 the harnesses you add in Settings appear in the popover.
 
-| Tool | Config file | Reads / writes |
-|---|---|---|
-| **pi** | `~/.pi/agent/settings.json` | `defaultProvider` + `defaultModel` |
-| **opencode** | `~/.config/opencode/opencode.json` | top-level `model` |
-| **hermes** | `~/.hermes/config.yaml` | top-level `model:` |
+
+| Tool         | Config file                        | Reads / writes                     |
+| ------------ | ---------------------------------- | ---------------------------------- |
+| **pi**       | `~/.pi/agent/settings.json`        | `defaultProvider` + `defaultModel` |
+| **opencode** | `~/.config/opencode/opencode.json` | top-level `model`                  |
+| **hermes**   | `~/.hermes/config.yaml`            | top-level `model:`                 |
+
 
 A tool that is not detected is hidden, and one whose config cannot be read is
 reported in a subdued footer line rather than shown as `unset`. Model ids split
@@ -83,9 +83,9 @@ searchable — text that matches no catalog model is still accepted.
 Settings has a **Store key in** picker:
 
 - **File** (default) — the `apiKey` field in `~/.pesa-app/settings.json`. The
-  directory and file are owner-only, but the value is **not encrypted**.
+directory and file are owner-only, but the value is **not encrypted**.
 - **Keychain** — the macOS login Keychain (service `pesa`). macOS asks for
-  access once; a rebuild with an ad-hoc signature makes it ask again.
+access once; a rebuild with an ad-hoc signature makes it ask again.
 
 Switching backends carries the key across and clears the old one, so it never
 lives in two places, and the key is never logged. **Save**, **Test key**, and
