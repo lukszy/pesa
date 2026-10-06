@@ -39,6 +39,7 @@ enum SelfTest {
         checkSearchablePicker()
         checkSettings()
         checkHarnessTiles()
+        checkUpdateSupport()
         let anyFailed = results.contains { !$0.condition }
         return countFailures(results) == 0 && !anyFailed ? 0 : 1
     }
@@ -1150,5 +1151,34 @@ enum SelfTest {
         } catch {
             check("staging check could not run: \(error)", false)
         }
+    }
+
+    /// Pins UpdateSupport's three interfaces: feedURL, overrideFeedURL,
+    /// and isConfigured. All pure, offline, and falsifiable.
+    private static func checkUpdateSupport() {
+        check("feed URL is the latest-release appcast",
+              UpdateSupport.feedURL == "https://github.com/lukszy/pesa/releases/latest/download/appcast.xml")
+        check("https override is accepted",
+              UpdateSupport.overrideFeedURL("https://example.com/appcast.xml") == "https://example.com/appcast.xml")
+        check("loopback http override is accepted",
+              UpdateSupport.overrideFeedURL("http://localhost:8000/appcast.xml") == "http://localhost:8000/appcast.xml")
+        check("127.0.0.1 http override is accepted",
+              UpdateSupport.overrideFeedURL("http://127.0.0.1:8000/a.xml") == "http://127.0.0.1:8000/a.xml")
+        check("remote http override is rejected",
+              UpdateSupport.overrideFeedURL("http://example.com/a.xml") == nil)
+        check("garbage override is rejected", UpdateSupport.overrideFeedURL("not a url") == nil)
+        check("empty override is rejected", UpdateSupport.overrideFeedURL("") == nil)
+        check("nil override is rejected", UpdateSupport.overrideFeedURL(nil) == nil)
+        check("file override is rejected", UpdateSupport.overrideFeedURL("file:///etc/passwd") == nil)
+        check("configured with a key in a bundle",
+              UpdateSupport.isConfigured(info: ["SUPublicEDKey": "abc="], isBundled: true))
+        check("not configured outside a bundle",
+              !UpdateSupport.isConfigured(info: ["SUPublicEDKey": "abc="], isBundled: false))
+        check("not configured without a key",
+              !UpdateSupport.isConfigured(info: [:], isBundled: true))
+        check("not configured with a blank key",
+              !UpdateSupport.isConfigured(info: ["SUPublicEDKey": "  "], isBundled: true))
+        check("not configured with a non-string key",
+              !UpdateSupport.isConfigured(info: ["SUPublicEDKey": 5], isBundled: true))
     }
 }

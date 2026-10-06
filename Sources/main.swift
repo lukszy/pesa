@@ -147,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: state, target: self, action: #selector(togglePopover))
         statusController = controller
         statusItem = controller.item
+        Updater.shared.start()
 
         // Refresh once at launch; the timer and the refresh icon cover the rest.
         Task { await state.refresh() }
@@ -180,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc private func checkForUpdates() { Updater.shared.checkNow() }
+
     @objc private func quit() { NSApp.terminate(nil) }
 
     /// Pops an `NSMenu` from the status item. `statusItem.menu` is assigned only
@@ -202,6 +205,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "Buy credits…", action: #selector(openCredits), keyEquivalent: "")
         creditsItem.target = self
         menu.addItem(creditsItem)
+        if Updater.shared.isAvailable {
+            let updateItem = NSMenuItem(
+                title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+            updateItem.target = self
+            menu.addItem(updateItem)
+        }
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
         quitItem.target = self
