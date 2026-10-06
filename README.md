@@ -41,9 +41,10 @@ daemon, and no third-party dependencies.
 
 Requires **macOS 13 or later**.
 
-Download the latest `Pesa-<version>-<arch>.dmg` from the repository's **Actions**
-tab (the `Pesa-macos` artifact of a successful run; a `.zip` is uploaded too),
-open the disk image, and drag **Pesa** into **Applications**.
+Download `Pesa-<version>-universal.dmg` from the repository's
+[**Releases**](../../releases/latest) page, open it, and drag **Pesa** into
+**Applications**. The build is universal, so it runs natively on both Apple
+Silicon and Intel Macs.
 
 The build is ad-hoc signed and not notarized, so macOS blocks the first launch as
 an "unidentified developer". Right-click the app and choose **Open**, or clear
@@ -89,63 +90,6 @@ Settings has a **Store key in** picker:
 Switching backends carries the key across and clears the old one, so it never
 lives in two places, and the key is never logged. **Save**, **Test key**, and
 **Clear** all act on the selected backend.
-
-## Settings
-
-Settings live in `~/.pesa-app/settings.json` — plain JSON that, in file key mode,
-contains the API key in plain text. They cover the key and where it is stored,
-the refresh interval, launch at login, the popover harnesses, per-model provider
-allow-lists (mirrored into pi's `models.json` as `compat.openRouterRouting.only`),
-menu bar presentation, and the low-balance threshold.
-
-- **Launch at login** needs the `.app` bundle; the raw `.build/` binary reports
-  that the bundle is required.
-- **Menu bar** — the balance and the icon are independent toggles, but if the
-  text is hidden the icon is always drawn so the item stays clickable. **Hide the
-  price until hovered** shows `...$` and reveals the figure on hover. Below the
-  alert threshold the text turns orange, the `...$` included.
-- **Low-balance alert** — opt-in, and fires only on a crossing below the
-  threshold, never on a state, so it does not re-notify on every refresh. It
-  also needs macOS notification permission.
-
-The window is an app-owned, resizable Settings window (sidebar: **General**,
-**API Key**, **Menu Bar**, **Agent Harnesses**, **Alerts**, **About**), opened
-with ⌘, or from the status item's right-click menu. Each harness row has an
-**Open config…** link that opens that harness's config file in its default
-application. The model editor is the Agent Harnesses detail pane: a change is
-written to the harness immediately, with no Set button.
-
-## Updates
-
-Release builds check GitHub for a newer release daily (**Settings → About**, or
-right-click the status item → **Check for Updates…**). Updates are verified with
-an EdDSA signature (Sparkle 2); the first build containing the updater must be
-installed manually.
-
-**Maintainer setup (once):** `./scripts/fetch-sparkle.sh`, then
-`./.build/sparkle/bin/generate_keys`; commit the public key to
-`scripts/sparkle-public-key.txt`; export the private key (`generate_keys -x`) into
-the repo secret `SPARKLE_ED_PRIVATE_KEY` and a password manager. Losing it
-strands installed copies. Until both the public key is committed to `scripts/sparkle-public-key.txt` and the `SPARKLE_ED_PRIVATE_KEY` repo secret is set, release builds ship with the updater disabled and the CI release job fails at "Sign release + appcast" (no release is published).
-
-CI builds are signed ad-hoc, so users of the opt-in Keychain key backend may be asked again for Keychain access after each update.
-
-**Manual end-to-end test:** build version N, then build N+1 with
-`VERSION=N+1 ./scripts/build-app.sh && ./scripts/package-app.sh`, run
-`VERSION=N+1 SPARKLE_ED_PRIVATE_KEY=… ./scripts/make-appcast.sh`, serve `dist/`
-with `python3 -m http.server`, run
-`defaults write local.pesa PesaFeedURLOverride http://localhost:8000/appcast.xml`,
-launch N and choose **Check for Updates…** (note the appcast's enclosure URLs
-point at GitHub; edit them to localhost for the test). Remove the override with
-`defaults delete local.pesa PesaFeedURLOverride`.
-
-## Not implemented
-
-- **Per-model 30-day usage statistics** — needs a management key; a normal key
-  gets HTTP 403 from `/api/v1/activity`.
-- **Adapters for codex, claude, aider, droid, gptme, or cursor.**
-- **Writing the OpenRouter key into other tools' config files.**
-- **Sandboxing and notarization.**
 
 ## License
 

@@ -14,8 +14,7 @@ if [ ! -d Pesa.app ]; then
 fi
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Pesa.app/Contents/Info.plist)"
-ARCH="$(uname -m)"
-NAME="Pesa-$VERSION-$ARCH"
+NAME="Pesa-$VERSION-universal"
 
 mkdir -p dist
 rm -f "dist/$NAME.zip" "dist/$NAME.dmg"
