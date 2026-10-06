@@ -115,13 +115,37 @@ with ⌘, or from the status item's right-click menu. Each harness row has an
 application. The model editor is the Agent Harnesses detail pane: a change is
 written to the harness immediately, with no Set button.
 
+## Updates
+
+Release builds check GitHub for a newer release daily (**Settings → About**, or
+right-click the status item → **Check for Updates…**). Updates are verified with
+an EdDSA signature (Sparkle 2); the first build containing the updater must be
+installed manually.
+
+**Maintainer setup (once):** `./scripts/fetch-sparkle.sh`, then
+`./.build/sparkle/bin/generate_keys`; commit the public key to
+`scripts/sparkle-public-key.txt`; export the private key (`generate_keys -x`) into
+the repo secret `SPARKLE_ED_PRIVATE_KEY` and a password manager. Losing it
+strands installed copies. Until both the public key is committed to `scripts/sparkle-public-key.txt` and the `SPARKLE_ED_PRIVATE_KEY` repo secret is set, release builds ship with the updater disabled and the CI release job fails at "Sign release + appcast" (no release is published).
+
+CI builds are signed ad-hoc, so users of the opt-in Keychain key backend may be asked again for Keychain access after each update.
+
+**Manual end-to-end test:** build version N, then build N+1 with
+`VERSION=N+1 ./scripts/build-app.sh && ./scripts/package-app.sh`, run
+`VERSION=N+1 SPARKLE_ED_PRIVATE_KEY=… ./scripts/make-appcast.sh`, serve `dist/`
+with `python3 -m http.server`, run
+`defaults write local.pesa PesaFeedURLOverride http://localhost:8000/appcast.xml`,
+launch N and choose **Check for Updates…** (note the appcast's enclosure URLs
+point at GitHub; edit them to localhost for the test). Remove the override with
+`defaults delete local.pesa PesaFeedURLOverride`.
+
 ## Not implemented
 
 - **Per-model 30-day usage statistics** — needs a management key; a normal key
   gets HTTP 403 from `/api/v1/activity`.
 - **Adapters for codex, claude, aider, droid, gptme, or cursor.**
 - **Writing the OpenRouter key into other tools' config files.**
-- **Sandboxing, notarization, and auto-update.**
+- **Sandboxing and notarization.**
 
 ## License
 

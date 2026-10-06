@@ -1934,6 +1934,7 @@ struct SettingsView: View {
                          destination: URL(string: "mailto:hello@lszymanski.dev")!)
                 }
             }
+            Section("Updates") { UpdatesSection() }
             Section {
                 Button("Buy credits…") {
                     if let url = URL(string: "https://openrouter.ai/settings/credits") {
@@ -1947,5 +1948,23 @@ struct SettingsView: View {
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+}
+
+/// Manual check plus the automatic-check toggle. Both are disabled when the
+/// build has no updater (raw binary, or no public key stamped).
+private struct UpdatesSection: View {
+    @State private var automatic = Updater.shared.automaticChecks
+
+    var body: some View {
+        Toggle("Automatically check for updates", isOn: Binding(
+            get: { automatic },
+            set: { automatic = $0; Updater.shared.automaticChecks = $0 }))
+            .disabled(!Updater.shared.isAvailable)
+        Button("Check for Updates…") { Updater.shared.checkNow() }
+            .disabled(!Updater.shared.isAvailable)
+        if !Updater.shared.isAvailable {
+            Text("Updates are unavailable in this build.").foregroundStyle(.secondary)
+        }
     }
 }

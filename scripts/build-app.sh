@@ -15,12 +15,27 @@ if [ -n "${VERSION:-}" ]; then
   /usr/libexec/PlistBuddy \
     -c "Set :CFBundleShortVersionString $VERSION" \
     Pesa.app/Contents/Info.plist
-  # The source plist has no CFBundleVersion; add it rather than Set.
-  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" \
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" \
     Pesa.app/Contents/Info.plist
 fi
 cp Resources/AppIcon.icns Pesa.app/Contents/Resources/AppIcon.icns
 cp Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png Pesa.app/Contents/Resources/
+
+# Sparkle: embed the framework. The app is not sandboxed, so the sandbox XPC
+# services are dropped (and their symlink, which codesign --strict rejects when
+# dangling).
+mkdir -p Pesa.app/Contents/Frameworks
+ditto .build/sparkle/Sparkle.framework Pesa.app/Contents/Frameworks/Sparkle.framework
+SPARKLE_FW="Pesa.app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$SPARKLE_FW/Versions/B/XPCServices" "$SPARKLE_FW/XPCServices"
+# The updater stays disabled until a public key is committed.
+PUBLIC_KEY="$(tr -d '[:space:]' < scripts/sparkle-public-key.txt 2>/dev/null || true)"
+if [ -n "$PUBLIC_KEY" ]; then
+  /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string $PUBLIC_KEY" Pesa.app/Contents/Info.plist
+else
+  echo "note: scripts/sparkle-public-key.txt is empty; updater will be disabled" >&2
+fi
+
 # Prefer a caller-provided identity, then the stable default, else fall back to
 # ad-hoc so a fresh machine still builds. `find-identity -p codesigning` lists an
 # untrusted identity too (CSSMERR_TP_NOT_TRUSTED), which is exactly what
@@ -40,7 +55,12 @@ elif ! security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
   echo "  (CSSMERR_TP_NOT_TRUSTED); expected, and harmless for local signing."
 fi
 
+# Inside-out: nested code first, then the framework, then the app.
+codesign --force --sign "$IDENTITY" "$SPARKLE_FW/Versions/B/Autoupdate"
+codesign --force --sign "$IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
+codesign --force --sign "$IDENTITY" "$SPARKLE_FW"
 codesign --force --sign "$IDENTITY" Pesa.app
+codesign --verify --deep --strict Pesa.app
 
 # Surface the thing that actually decides whether macOS re-prompts for Keychain
 # access: the designated requirement. A certificate-based one names the cert and

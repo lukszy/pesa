@@ -47,6 +47,13 @@ jobs:
       - name: Package zip + dmg
         run: ./scripts/package-app.sh
 
+      - name: Sign release + appcast
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: ./scripts/make-appcast.sh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
