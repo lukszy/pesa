@@ -4,18 +4,13 @@
 
   <h1>Pesa</h1>
   <p><strong>OpenRouter balance and agent-model control, in the macOS menu bar.</strong></p>
+  <img alt="version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue">
 
-  <p>
+  <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-black">
 
-    <img alt="version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue">
+  <img alt="dependencies none" src="https://img.shields.io/badge/dependencies-none-brightgreen">
 
-    <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-black">
-
-    <img alt="dependencies none" src="https://img.shields.io/badge/dependencies-none-brightgreen">
-
-    <img alt="license not specified" src="https://img.shields.io/badge/license-not%20specified-lightgrey">
-
-  </p>
+  <img alt="license not specified" src="https://img.shields.io/badge/license-not%20specified-lightgrey">
 
 </div>
 
