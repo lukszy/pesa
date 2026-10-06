@@ -9,6 +9,16 @@ rm -rf Pesa.app
 mkdir -p Pesa.app/Contents/MacOS Pesa.app/Contents/Resources
 cp .build/Pesa Pesa.app/Contents/MacOS/Pesa
 cp Resources/Info.plist Pesa.app/Contents/Info.plist
+# CI passes the release version (scripts/next-version.sh); local builds keep the
+# plist's own. Stamped before codesign so the signature covers it.
+if [ -n "${VERSION:-}" ]; then
+  /usr/libexec/PlistBuddy \
+    -c "Set :CFBundleShortVersionString $VERSION" \
+    Pesa.app/Contents/Info.plist
+  # The source plist has no CFBundleVersion; add it rather than Set.
+  /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" \
+    Pesa.app/Contents/Info.plist
+fi
 cp Resources/AppIcon.icns Pesa.app/Contents/Resources/AppIcon.icns
 cp Resources/MenuBarIcon.png Resources/MenuBarIcon@2x.png Pesa.app/Contents/Resources/
 # Prefer a caller-provided identity, then the stable default, else fall back to

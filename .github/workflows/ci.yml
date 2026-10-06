@@ -7,14 +7,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One release run at a time so two quick pushes cannot pick the same version.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   build-and-test:
     runs-on: macos-latest
+    permissions:
+      contents: write # tag + GitHub Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history and tags for next-version.sh
 
       - name: Toolchain
         run: swiftc --version
+
+      - name: Test next-version script
+        run: ./scripts/test-next-version.sh
 
       - name: Build
         run: ./scripts/build.sh
@@ -22,8 +34,15 @@ jobs:
       - name: Test (assert-based selftest)
         run: ./.build/Pesa --selftest
 
+      - name: Next version (master pushes only)
+        id: version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: echo "version=$(./scripts/next-version.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Assemble app bundle
         run: ./scripts/build-app.sh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
 
       - name: Package zip + dmg
         run: ./scripts/package-app.sh
@@ -34,3 +53,14 @@ jobs:
           name: Pesa-macos
           path: dist/*
           if-no-files-found: error
+
+      - name: Publish release
+        if: steps.version.outputs.version != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "Pesa $VERSION" \
+            --generate-notes
