@@ -21,6 +21,11 @@ struct AppConfig: Codable {
     var launchAtLogin: Bool = false
     var addedHarnesses: [String] = []
     var providerOnly: [String: [String]] = [:]
+    /// Global OpenRouter routing policy, written to pi for every OpenRouter
+    /// model (`provider.zdr` / `provider.allow_fallbacks`). Off means the key
+    /// is absent from the request, so OpenRouter's defaults apply.
+    var requireZDR: Bool = false
+    var disallowFallbacks: Bool = false
     var showMoneyInMenuBar: Bool = true
     var showIconInMenuBar: Bool = true
     var hidesAmountInMenuBar: Bool = false
@@ -47,6 +52,8 @@ struct AppConfig: Codable {
         launchAtLogin = (try? c.decodeIfPresent(Bool.self, forKey: .launchAtLogin)) ?? false
         addedHarnesses = (try? c.decodeIfPresent([String].self, forKey: .addedHarnesses)) ?? []
         providerOnly = (try? c.decodeIfPresent([String: [String]].self, forKey: .providerOnly)) ?? [:]
+        requireZDR = (try? c.decodeIfPresent(Bool.self, forKey: .requireZDR)) ?? false
+        disallowFallbacks = (try? c.decodeIfPresent(Bool.self, forKey: .disallowFallbacks)) ?? false
         showMoneyInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar)) ?? true
         showIconInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar)) ?? true
         hidesAmountInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .hidesAmountInMenuBar)) ?? false

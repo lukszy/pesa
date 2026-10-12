@@ -809,6 +809,106 @@ enum SelfTest {
             let stillSame = try ConfigFile.read(modelsPath)
             check("clearing an absent override does not rewrite the file",
                   stillSame == afterClear)
+
+            // The global routing policy lives one level up, at
+            // providers.openrouter.compat.openRouterRouting, where pi merges
+            // it into every OpenRouter model under any per-model override.
+            // Each flag owns exactly one key there and never touches the other.
+            let policy: (String) throws -> [String: Any]? = { path in
+                guard let root = try piObject(path),
+                      let providers = root["providers"] as? [String: Any],
+                      let openrouter = providers["openrouter"] as? [String: Any],
+                      let compat = openrouter["compat"] as? [String: Any] else { return nil }
+                return compat["openRouterRouting"] as? [String: Any]
+            }
+            let openrouterCompat: (String) throws -> Any? = { path in
+                guard let root = try piObject(path),
+                      let providers = root["providers"] as? [String: Any],
+                      let openrouter = providers["openrouter"] as? [String: Any] else { return nil }
+                return openrouter["compat"]
+            }
+            try setPiProviderOnly(model: "deepseek/deepseek-v4.1-flash", only: ["morph"], in: modelsPath)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: true, in: modelsPath)
+            try setPiOpenRouterPolicy(.disallowFallbacks, enabled: true, in: modelsPath)
+            let writtenPolicy = try policy(modelsPath)
+            let onlyAfterPolicy = try routingOnly(modelsPath)?["only"] as? [String]
+            let ollamaAfterPolicy = try ollamaPresent(modelsPath)
+            check("the global policy is written and the per-model allow-list survives",
+                  writtenPolicy?["zdr"] as? Bool == true
+                      && writtenPolicy?["allow_fallbacks"] as? Bool == false
+                      && onlyAfterPolicy == ["morph"] && ollamaAfterPolicy)
+
+            // Non-vacuous no-op: the file is hand-formatted first, so a
+            // needless rewrite would re-pretty-print it and change the bytes.
+            let compactPolicy = #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"zdr":true,"allow_fallbacks":false}}}}}"#
+            try compactPolicy.write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: true, in: modelsPath)
+            try setPiOpenRouterPolicy(.disallowFallbacks, enabled: true, in: modelsPath)
+            let unchangedPolicy = try ConfigFile.read(modelsPath)
+            check("an unchanged policy does not rewrite the file",
+                  unchangedPolicy == compactPolicy)
+
+            try setPiOpenRouterPolicy(.disallowFallbacks, enabled: false, in: modelsPath)
+            let halfPolicy = try policy(modelsPath)
+            check("turning one flag off removes only its key",
+                  halfPolicy?["zdr"] as? Bool == true && halfPolicy?["allow_fallbacks"] == nil)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: false, in: modelsPath)
+            let clearedPolicy = try policy(modelsPath)
+            let compatAfterClear = try openrouterCompat(modelsPath)
+            let rootAfterClear = try piObject(modelsPath)
+            check("clearing the last flag prunes the empty compat chain",
+                  clearedPolicy == nil && compatAfterClear == nil && rootAfterClear?["providers"] == nil)
+            // Hand-formatted again, so a needless rewrite would show as bytes.
+            let compactOther = #"{"providers":{"ollama":{"baseUrl":"http://x"}}}"#
+            try compactOther.write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: false, in: modelsPath)
+            let stillClear = try ConfigFile.read(modelsPath)
+            check("turning off an absent flag does not rewrite the file",
+                  stillClear == compactOther)
+
+            // Keys the app does not own, and the *other* flag when it was set by
+            // hand, must survive a toggle: turning ZDR on with the app's
+            // fallbacks toggle off must not delete a hand-set allow_fallbacks.
+            try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"sort":"price","allow_fallbacks":false}}}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: true, in: modelsPath)
+            let withSibling = try policy(modelsPath)
+            check("a flag keeps hand-set keys, including the other flag",
+                  withSibling?["sort"] as? String == "price"
+                      && withSibling?["allow_fallbacks"] as? Bool == false
+                      && withSibling?["zdr"] as? Bool == true)
+            try setPiOpenRouterPolicy(.requireZDR, enabled: false, in: modelsPath)
+            let siblingOnly = try policy(modelsPath)
+            check("turning a flag off keeps the hand-set keys and the object",
+                  siblingOnly?["sort"] as? String == "price"
+                      && siblingOnly?["allow_fallbacks"] as? Bool == false
+                      && siblingOnly?["zdr"] == nil)
+
+            // Reconcile (launch-time): pushes only the flags that are on, so a
+            // failed or pre-install write is retried, and never removes a key.
+            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: true, in: modelsPath)
+            let reconciled = try policy(modelsPath)
+            check("reconcile adds the on flag and leaves everything else",
+                  reconciled?["allow_fallbacks"] as? Bool == false
+                      && reconciled?["sort"] as? String == "price" && reconciled?["zdr"] == nil)
+            try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"zdr":true}}}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: false, in: modelsPath)
+            let notRemoved = try policy(modelsPath)
+            check("reconcile with both flags off never removes a hand-set key",
+                  notRemoved?["zdr"] as? Bool == true)
+            let absentPath = dir.appendingPathComponent("absent-models.json").path
+            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: false, in: absentPath)
+            check("reconcile with both flags off does not create a file",
+                  !FileManager.default.fileExists(atPath: absentPath))
+
+            // A fresh models.json created for the policy is owner-only.
+            let freshPath = dir.appendingPathComponent("fresh-models.json").path
+            try setPiOpenRouterPolicy(.disallowFallbacks, enabled: true, in: freshPath)
+            let freshMode = (try? FileManager.default.attributesOfItem(atPath: freshPath))?[.posixPermissions] as? NSNumber
+            let freshPolicy = try policy(freshPath)
+            check("a fresh models.json holding the policy is owner-only (0600)",
+                  freshPolicy?["allow_fallbacks"] as? Bool == false && freshMode?.intValue == 0o600)
         } catch {
             check("model detail checks could not run: \(error)", false)
         }
@@ -1006,12 +1106,16 @@ enum SelfTest {
             registry.addedHarnesses = ["pi", "hermes"]
             registry.providerOnly = ["deepseek/deepseek-v4.1-flash": ["together"]]
             registry.keyStorage = .keychain
+            registry.requireZDR = true
+            registry.disallowFallbacks = true
             try registry.save(to: settingsPath)
             let registryRound = AppConfig.load(from: settingsPath)
             check("added harnesses, provider-only and key storage round-trip",
                   registryRound.addedHarnesses == ["pi", "hermes"]
                       && registryRound.providerOnly == ["deepseek/deepseek-v4.1-flash": ["together"]]
                       && registryRound.keyStorage == .keychain)
+            check("the OpenRouter routing policy round-trips",
+                  registryRound.requireZDR && registryRound.disallowFallbacks)
 
             var fields = AppConfig.load(from: settingsPath)
             fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
@@ -1036,6 +1140,7 @@ enum SelfTest {
                       && !older.hidesAmountInMenuBar && !older.notifyBelowEnabled
                       && older.notifyBelowAmount == 7.5 && !older.launchAtLogin
                       && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty
+                      && !older.requireZDR && !older.disallowFallbacks
                       && older.apiKey == nil && older.keyStorage == .file)
 
             // A present-but-mistyped value must cost only its own field: without
