@@ -402,18 +402,15 @@ func lastPiGenerationID(in transcript: String) -> String? {
     return nil
 }
 
-/// Sets (or clears) the OpenRouter provider allow-list for one model in pi's
-/// `models.json`, at `providers.openrouter.modelOverrides.<model>.compat.
-/// openRouterRouting.only`, so pi actually routes through those providers.
-/// An empty list removes the key and prunes the containers it leaves empty; a
-/// no-op leaves the file untouched.
-///
 /// ponytail: the one config edit that parses and re-serializes instead of
-/// byte-preserving. The target is a nested object/array the regex primitives
-/// cannot address, and models.json is plain JSON with no comments, so the
-/// round-trip loses only key order/formatting — never data. The pre-write bytes
-/// are still backed up to `<path>.bak`.
-func setPiProviderOnly(model: String, only: [String], in path: String) throws {
+/// byte-preserving. Shared by every `models.json` writer. The target of every
+/// edit is a nested object/array the regex primitives cannot address, and
+/// models.json is plain JSON with no comments, so the round-trip loses only
+/// key order/formatting — never data. `edit` mutates the root and returns
+/// false for a no-op, in which case the file is left byte-for-byte untouched
+/// (not even reformatted). The pre-write bytes are backed up to `<path>.bak`;
+/// a fresh file is written owner-only, because models.json can hold an apiKey.
+private func editPiModelsJSON(at path: String, _ edit: (inout [String: Any]) -> Bool) throws {
     let exists = FileManager.default.fileExists(atPath: path)
     var root: [String: Any] = [:]
     if exists {
@@ -424,33 +421,7 @@ func setPiProviderOnly(model: String, only: [String], in path: String) throws {
         root = object
     }
 
-    var providers = root["providers"] as? [String: Any] ?? [:]
-    var openrouter = providers["openrouter"] as? [String: Any] ?? [:]
-    var overrides = openrouter["modelOverrides"] as? [String: Any] ?? [:]
-    var entry = overrides[model] as? [String: Any] ?? [:]
-    var compat = entry["compat"] as? [String: Any] ?? [:]
-    var routing = compat["openRouterRouting"] as? [String: Any] ?? [:]
-
-    // No-op guard: do not rewrite (and reformat) the file when nothing changes.
-    if only.isEmpty {
-        guard routing["only"] != nil else { return }
-    } else if routing["only"] as? [String] == only {
-        return
-    }
-
-    if only.isEmpty {
-        routing.removeValue(forKey: "only")
-    } else {
-        routing["only"] = only
-    }
-
-    // Rebuild bottom-up, pruning any container the edit leaves empty.
-    if routing.isEmpty { compat.removeValue(forKey: "openRouterRouting") } else { compat["openRouterRouting"] = routing }
-    if compat.isEmpty { entry.removeValue(forKey: "compat") } else { entry["compat"] = compat }
-    if entry.isEmpty { overrides.removeValue(forKey: model) } else { overrides[model] = entry }
-    if overrides.isEmpty { openrouter.removeValue(forKey: "modelOverrides") } else { openrouter["modelOverrides"] = overrides }
-    if openrouter.isEmpty { providers.removeValue(forKey: "openrouter") } else { providers["openrouter"] = openrouter }
-    if providers.isEmpty { root.removeValue(forKey: "providers") } else { root["providers"] = providers }
+    guard edit(&root) else { return }
 
     let data = try JSONSerialization.data(withJSONObject: root,
                                           options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
@@ -460,8 +431,104 @@ func setPiProviderOnly(model: String, only: [String], in path: String) throws {
         try ConfigFile.atomicWrite(text, to: path)
     } else {
         try text.write(toFile: path, atomically: true, encoding: .utf8)
-        // A fresh models.json can hold an apiKey; keep it owner-only like the
-        // app's own settings file rather than the ~0644 default.
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
+}
+
+/// Stores `value` under `key` in `object`, or removes the key when `value` is
+/// empty, so an edit never leaves an empty container behind.
+private func setOrPrune(_ object: inout [String: Any], _ key: String, _ value: [String: Any]) {
+    if value.isEmpty { object.removeValue(forKey: key) } else { object[key] = value }
+}
+
+/// Sets (or clears) the OpenRouter provider allow-list for one model in pi's
+/// `models.json`, at `providers.openrouter.modelOverrides.<model>.compat.
+/// openRouterRouting.only`, so pi actually routes through those providers.
+/// An empty list removes the key and prunes the containers it leaves empty; a
+/// no-op leaves the file untouched.
+func setPiProviderOnly(model: String, only: [String], in path: String) throws {
+    try editPiModelsJSON(at: path) { root in
+        var providers = root["providers"] as? [String: Any] ?? [:]
+        var openrouter = providers["openrouter"] as? [String: Any] ?? [:]
+        var overrides = openrouter["modelOverrides"] as? [String: Any] ?? [:]
+        var entry = overrides[model] as? [String: Any] ?? [:]
+        var compat = entry["compat"] as? [String: Any] ?? [:]
+        var routing = compat["openRouterRouting"] as? [String: Any] ?? [:]
+
+        if only.isEmpty {
+            guard routing["only"] != nil else { return false }
+            routing.removeValue(forKey: "only")
+        } else {
+            guard routing["only"] as? [String] != only else { return false }
+            routing["only"] = only
+        }
+
+        // Rebuild bottom-up, pruning any container the edit leaves empty.
+        setOrPrune(&compat, "openRouterRouting", routing)
+        setOrPrune(&entry, "compat", compat)
+        setOrPrune(&overrides, model, entry)
+        setOrPrune(&openrouter, "modelOverrides", overrides)
+        setOrPrune(&providers, "openrouter", openrouter)
+        setOrPrune(&root, "providers", providers)
+        return true
+    }
+}
+
+/// One flag of the global OpenRouter routing policy. Each flag owns exactly
+/// one key of pi's `provider` object and the value it writes when on; off
+/// removes that key so OpenRouter's default applies. Keys a flag does not own
+/// (the other flag, or a hand-set `sort`/`order`) are never touched.
+enum OpenRouterPolicyFlag: CaseIterable {
+    /// `zdr: true` — route only to zero-data-retention endpoints.
+    case requireZDR
+    /// `allow_fallbacks: false` — fail rather than try a non-allowed provider.
+    case disallowFallbacks
+
+    var key: String {
+        switch self {
+        case .requireZDR: return "zdr"
+        case .disallowFallbacks: return "allow_fallbacks"
+        }
+    }
+
+    var onValue: Bool {
+        switch self {
+        case .requireZDR: return true
+        case .disallowFallbacks: return false
+        }
+    }
+}
+
+/// Sets (or clears) one global routing-policy flag in pi's `models.json`, at
+/// `providers.openrouter.compat.openRouterRouting`, which pi deep-merges into
+/// every OpenRouter model beneath any per-model `modelOverrides` entry. Only
+/// the flag's own key is compared and written, so a toggle never deletes the
+/// other flag when the user set it by hand; the object and its parents are
+/// pruned only once empty. A no-op leaves the file untouched.
+func setPiOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool, in path: String) throws {
+    try editPiModelsJSON(at: path) { root in
+        var providers = root["providers"] as? [String: Any] ?? [:]
+        var openrouter = providers["openrouter"] as? [String: Any] ?? [:]
+        var compat = openrouter["compat"] as? [String: Any] ?? [:]
+        var routing = compat["openRouterRouting"] as? [String: Any] ?? [:]
+
+        let want: Bool? = enabled ? flag.onValue : nil
+        guard routing[flag.key] as? Bool != want else { return false }
+        routing[flag.key] = want
+
+        setOrPrune(&compat, "openRouterRouting", routing)
+        setOrPrune(&openrouter, "compat", compat)
+        setOrPrune(&providers, "openrouter", openrouter)
+        setOrPrune(&root, "providers", providers)
+        return true
+    }
+}
+
+/// Launch-time reconcile of the stored policy into pi: writes every flag that
+/// is on, so a write that failed or predates pi's install is retried, and
+/// never removes a key, so a hand-set flag survives an app whose toggle is
+/// off. With both flags off it touches nothing, not even a missing file.
+func reconcilePiOpenRouterPolicy(requireZDR: Bool, disallowFallbacks: Bool, in path: String) throws {
+    if requireZDR { try setPiOpenRouterPolicy(.requireZDR, enabled: true, in: path) }
+    if disallowFallbacks { try setPiOpenRouterPolicy(.disallowFallbacks, enabled: true, in: path) }
 }
