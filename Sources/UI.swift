@@ -666,6 +666,7 @@ final class AppState: ObservableObject {
             rows = outcome.rows
         } while discoveryPending
         hasCompletedDiscovery = true
+        reconcileOpenRouterPolicyToPi()
     }
 
     func providers(forAdapterID id: String, current: String?) -> [String] {
@@ -764,6 +765,10 @@ final class AppState: ObservableObject {
     /// The last failure writing the allow-list into pi's `models.json`; nil
     /// after a successful write. Shown in the editor, never swallowed.
     @Published var piRoutingError: String?
+    /// The last failure writing the global routing policy (ZDR / fallbacks)
+    /// into pi's `models.json`; nil after a successful write. Shown under the
+    /// Settings toggles, never swallowed.
+    @Published var piPolicyError: String?
     /// The upstream provider that served each harness's last request, keyed by
     /// harness id. Only pi records an OpenRouter generation id, so only its
     /// entry is ever set. Published so a late fetch re-renders the tile.
@@ -911,6 +916,43 @@ final class AppState: ObservableObject {
             piRoutingError = nil
         } catch {
             piRoutingError = "Could not update pi's provider routing: \(describe(error))"
+        }
+    }
+
+    /// Stores one global routing-policy flag and mirrors that flag alone into
+    /// pi's `models.json` at the provider level, so every OpenRouter model in
+    /// pi inherits it. A Settings toggle is a deliberate user action, so off
+    /// does remove the flag's key; the other flag's key is never touched.
+    func setOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool) {
+        switch flag {
+        case .requireZDR: config.requireZDR = enabled
+        case .disallowFallbacks: config.disallowFallbacks = enabled
+        }
+        guard piRoutingAvailable else {
+            // pi is not installed: nothing to write, and no error to show.
+            piPolicyError = nil
+            return
+        }
+        do {
+            try setPiOpenRouterPolicy(flag, enabled: enabled, in: paths.piModels)
+            piPolicyError = nil
+        } catch {
+            piPolicyError = "Could not update pi's routing policy: \(describe(error))"
+        }
+    }
+
+    /// Re-pushes the stored policy's on flags into pi after discovery, so a
+    /// toggle write that failed, or one made before pi was installed, is
+    /// retried. Never removes a key (see `reconcilePiOpenRouterPolicy`).
+    private func reconcileOpenRouterPolicyToPi() {
+        guard piRoutingAvailable, config.requireZDR || config.disallowFallbacks else { return }
+        do {
+            try reconcilePiOpenRouterPolicy(requireZDR: config.requireZDR,
+                                            disallowFallbacks: config.disallowFallbacks,
+                                            in: paths.piModels)
+            piPolicyError = nil
+        } catch {
+            piPolicyError = "Could not update pi's routing policy: \(describe(error))"
         }
     }
 
@@ -1466,6 +1508,10 @@ struct ModelEditorView: View {
                      ? "Tick a provider to allow it (OpenRouter's provider.only). Written to pi's models.json."
                      : "Tick a provider to allow it (OpenRouter's provider.only). Recorded by this app.")
                     .font(.caption2).foregroundStyle(.secondary)
+                if state.config.requireZDR {
+                    Text("Require ZDR is on in Settings: OpenRouter skips providers without ZDR even when ticked.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 if let error = state.piRoutingError {
                     Text(error).font(.caption2).foregroundStyle(.red)
                 }
@@ -1808,8 +1854,34 @@ struct SettingsView: View {
                     Text(error).foregroundStyle(.red)
                 }
             }
+            Section {
+                settingToggle("Require ZDR providers",
+                              subtitle: "Route only to zero-data-retention endpoints (OpenRouter's provider.zdr).",
+                              isOn: policyBinding(.requireZDR, \.requireZDR))
+                settingToggle("No fallback providers",
+                              subtitle: "Fail instead of trying another provider when the allowed ones are unavailable (provider.allow_fallbacks = false).",
+                              isOn: policyBinding(.disallowFallbacks, \.disallowFallbacks))
+                if let error = state.piPolicyError {
+                    Text(error).foregroundStyle(.red)
+                }
+            } header: {
+                Text("OpenRouter routing")
+            } footer: {
+                Text(state.piRoutingAvailable
+                     ? "Applies to every OpenRouter model. Written to pi's models.json."
+                     : "Applies to every OpenRouter model. Recorded by this app; pi is not installed.")
+            }
         }
         .formStyle(.grouped)
+    }
+
+    /// One toggle over a global routing policy flag: `AppState` stores it (the
+    /// config `didSet` persists it) and mirrors that one flag into pi.
+    private func policyBinding(_ flag: OpenRouterPolicyFlag,
+                               _ keyPath: KeyPath<AppConfig, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { state.config[keyPath: keyPath] },
+            set: { state.setOpenRouterPolicy(flag, enabled: $0) })
     }
 
     /// The harness registry. Detection still finds every installed harness; this
