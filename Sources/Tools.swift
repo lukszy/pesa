@@ -474,47 +474,109 @@ func setPiProviderOnly(model: String, only: [String], in path: String) throws {
     }
 }
 
-/// One flag of the global OpenRouter routing policy. Each flag owns exactly
-/// one key of pi's `provider` object and the value it writes when on; off
-/// removes that key so OpenRouter's default applies. Keys a flag does not own
-/// (the other flag, or a hand-set `sort`/`order`) are never touched.
+/// One boolean flag of the global OpenRouter routing policy. Each flag owns
+/// exactly one key of pi's `provider` object and the value it writes when on;
+/// off removes that key so OpenRouter's default applies. Keys a flag does not
+/// own (another flag, or a hand-set `order`) are never touched.
 enum OpenRouterPolicyFlag: CaseIterable {
     /// `zdr: true` — route only to zero-data-retention endpoints.
     case requireZDR
     /// `allow_fallbacks: false` — fail rather than try a non-allowed provider.
     case disallowFallbacks
+    /// `data_collection: "deny"` — skip providers that may store or train on prompts.
+    case denyDataCollection
+    /// `require_parameters: true` — skip providers that ignore a request parameter.
+    case requireParameters
 
     var key: String {
         switch self {
         case .requireZDR: return "zdr"
         case .disallowFallbacks: return "allow_fallbacks"
+        case .denyDataCollection: return "data_collection"
+        case .requireParameters: return "require_parameters"
         }
     }
 
-    var onValue: Bool {
+    var onValue: Any {
         switch self {
         case .requireZDR: return true
         case .disallowFallbacks: return false
+        case .denyDataCollection: return "deny"
+        case .requireParameters: return true
         }
     }
 }
 
-/// Sets (or clears) one global routing-policy flag in pi's `models.json`, at
-/// `providers.openrouter.compat.openRouterRouting`, which pi deep-merges into
-/// every OpenRouter model beneath any per-model `modelOverrides` entry. Only
-/// the flag's own key is compared and written, so a toggle never deletes the
-/// other flag when the user set it by hand; the object and its parents are
-/// pruned only once empty. A no-op leaves the file untouched.
-func setPiOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool, in path: String) throws {
+/// The non-flag routing keys, each owned the same way as a flag's.
+enum OpenRouterRoutingKey {
+    static let sort = "sort"
+    static let quantizations = "quantizations"
+    /// Dotted: each owns one entry of the nested `max_price` object.
+    static let maxPricePrompt = "max_price.prompt"
+    static let maxPriceCompletion = "max_price.completion"
+}
+
+/// `sort` values OpenRouter accepts.
+let openRouterSortOptions = ["price", "throughput", "latency"]
+/// `quantizations` values OpenRouter accepts.
+let openRouterQuantizationOptions = ["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"]
+
+/// What the config wants at each routing key Pesa owns; `nil` means the key
+/// should be absent (OpenRouter's default). Pure.
+func openRouterRoutingValues(_ config: AppConfig) -> [String: Any?] {
+    func price(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+    let sort = config.routingSort.flatMap { openRouterSortOptions.contains($0) ? $0 : nil }
+    // Canonical order, unknown names dropped, so the written list is stable.
+    let quantizations = openRouterQuantizationOptions.filter(config.allowedQuantizations.contains)
+    var values: [String: Any?] = [
+        OpenRouterRoutingKey.sort: sort,
+        OpenRouterRoutingKey.quantizations: quantizations.isEmpty ? nil : quantizations,
+        OpenRouterRoutingKey.maxPricePrompt: price(config.maxPricePrompt),
+        OpenRouterRoutingKey.maxPriceCompletion: price(config.maxPriceCompletion),
+    ]
+    for flag in OpenRouterPolicyFlag.allCases {
+        let want: Any? = config.isOn(flag) ? flag.onValue : nil
+        values.updateValue(want, forKey: flag.key)
+    }
+    return values
+}
+
+private func jsonValuesEqual(_ a: Any?, _ b: Any?) -> Bool {
+    switch (a, b) {
+    case (nil, nil): return true
+    case let (a?, b?): return (a as? NSObject)?.isEqual(b as? NSObject) ?? false
+    default: return false
+    }
+}
+
+/// Sets (or clears, with `nil`) one key of the global routing policy in pi's
+/// `models.json`, at `providers.openrouter.compat.openRouterRouting`, which pi
+/// deep-merges into every OpenRouter model beneath any per-model
+/// `modelOverrides` entry. Only that key is compared and written, so a write
+/// never deletes a sibling the user set by hand; the object and its parents
+/// are pruned only once empty. A no-op leaves the file untouched.
+func setPiOpenRouterRouting(key: String, value: Any?, in path: String) throws {
     try editPiModelsJSON(at: path) { root in
         var providers = root["providers"] as? [String: Any] ?? [:]
         var openrouter = providers["openrouter"] as? [String: Any] ?? [:]
         var compat = openrouter["compat"] as? [String: Any] ?? [:]
         var routing = compat["openRouterRouting"] as? [String: Any] ?? [:]
 
-        let want: Bool? = enabled ? flag.onValue : nil
-        guard routing[flag.key] as? Bool != want else { return false }
-        routing[flag.key] = want
+        // A dotted key (`max_price.prompt`) owns one entry of a nested object,
+        // so a hand-set sibling inside it (`max_price.image`) survives.
+        let parts = key.split(separator: ".").map(String.init)
+        if parts.count == 2 {
+            var nested = routing[parts[0]] as? [String: Any] ?? [:]
+            guard !jsonValuesEqual(nested[parts[1]], value) else { return false }
+            nested[parts[1]] = value
+            setOrPrune(&routing, parts[0], nested)
+        } else {
+            guard !jsonValuesEqual(routing[key], value) else { return false }
+            routing[key] = value
+        }
 
         setOrPrune(&compat, "openRouterRouting", routing)
         setOrPrune(&openrouter, "compat", compat)
@@ -524,11 +586,17 @@ func setPiOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool, in path:
     }
 }
 
-/// Launch-time reconcile of the stored policy into pi: writes every flag that
-/// is on, so a write that failed or predates pi's install is retried, and
-/// never removes a key, so a hand-set flag survives an app whose toggle is
-/// off. With both flags off it touches nothing, not even a missing file.
-func reconcilePiOpenRouterPolicy(requireZDR: Bool, disallowFallbacks: Bool, in path: String) throws {
-    if requireZDR { try setPiOpenRouterPolicy(.requireZDR, enabled: true, in: path) }
-    if disallowFallbacks { try setPiOpenRouterPolicy(.disallowFallbacks, enabled: true, in: path) }
+/// Sets (or clears) one boolean routing flag; see `setPiOpenRouterRouting`.
+func setPiOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool, in path: String) throws {
+    try setPiOpenRouterRouting(key: flag.key, value: enabled ? flag.onValue : nil, in: path)
+}
+
+/// Launch-time reconcile of the stored policy into pi: writes every setting
+/// that is on, so a write that failed or predates pi's install is retried, and
+/// never removes a key, so a hand-set value survives an app whose setting is
+/// off. With everything off it touches nothing, not even a missing file.
+func reconcilePiOpenRouterPolicy(_ config: AppConfig, in path: String) throws {
+    for (key, value) in openRouterRoutingValues(config) {
+        if let value { try setPiOpenRouterRouting(key: key, value: value, in: path) }
+    }
 }

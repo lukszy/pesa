@@ -886,21 +886,122 @@ enum SelfTest {
 
             // Reconcile (launch-time): pushes only the flags that are on, so a
             // failed or pre-install write is retried, and never removes a key.
-            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: true, in: modelsPath)
+            var fallbacksOnly = AppConfig()
+            fallbacksOnly.disallowFallbacks = true
+            try reconcilePiOpenRouterPolicy(fallbacksOnly, in: modelsPath)
             let reconciled = try policy(modelsPath)
             check("reconcile adds the on flag and leaves everything else",
                   reconciled?["allow_fallbacks"] as? Bool == false
                       && reconciled?["sort"] as? String == "price" && reconciled?["zdr"] == nil)
             try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"zdr":true}}}}}"#
                 .write(toFile: modelsPath, atomically: true, encoding: .utf8)
-            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: false, in: modelsPath)
+            try reconcilePiOpenRouterPolicy(AppConfig(), in: modelsPath)
             let notRemoved = try policy(modelsPath)
             check("reconcile with both flags off never removes a hand-set key",
                   notRemoved?["zdr"] as? Bool == true)
             let absentPath = dir.appendingPathComponent("absent-models.json").path
-            try reconcilePiOpenRouterPolicy(requireZDR: false, disallowFallbacks: false, in: absentPath)
-            check("reconcile with both flags off does not create a file",
+            try reconcilePiOpenRouterPolicy(AppConfig(), in: absentPath)
+            check("reconcile with everything off does not create a file",
                   !FileManager.default.fileExists(atPath: absentPath))
+
+            // The value-carrying settings: pure mapping from config to JSON.
+            var rich = AppConfig()
+            rich.denyDataCollection = true; rich.requireParameters = true
+            rich.routingSort = "latency"
+            rich.allowedQuantizations = ["fp8", "bogus", "int4"]
+            rich.maxPricePrompt = 1.5; rich.maxPriceCompletion = nil
+            let richValues = openRouterRoutingValues(rich)
+            check("config maps to routing values (canonical quantizations, partial price)",
+                  richValues["data_collection"] as? String == "deny"
+                      && richValues["require_parameters"] as? Bool == true
+                      && richValues["sort"] as? String == "latency"
+                      && richValues["quantizations"] as? [String] == ["int4", "fp8"]
+                      && richValues["max_price.prompt"] as? Double == 1.5
+                      && (richValues["max_price.completion"] ?? nil) == nil
+                      && (richValues["zdr"] ?? nil) == nil)
+            var bad = AppConfig()
+            bad.routingSort = "cheapest"; bad.maxPricePrompt = -1; bad.maxPriceCompletion = .nan
+            let badValues = openRouterRoutingValues(bad)
+            check("invalid sort and prices map to absent keys",
+                  (badValues["sort"] ?? nil) == nil && (badValues["max_price.prompt"] ?? nil) == nil
+                      && (badValues["max_price.completion"] ?? nil) == nil)
+
+            // Reconcile writes them next to hand-set siblings and is idempotent.
+            try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"order":["a"]}}}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try reconcilePiOpenRouterPolicy(rich, in: modelsPath)
+            let richWritten = try policy(modelsPath)
+            check("reconcile writes the value settings and keeps hand-set keys",
+                  richWritten?["order"] as? [String] == ["a"]
+                      && richWritten?["data_collection"] as? String == "deny"
+                      && richWritten?["quantizations"] as? [String] == ["int4", "fp8"]
+                      && (richWritten?["max_price"] as? [String: Any])?["prompt"] as? Double == 1.5)
+            let beforeRepeat = try ConfigFile.read(modelsPath)
+            try reconcilePiOpenRouterPolicy(rich, in: modelsPath)
+            let afterRepeat = try ConfigFile.read(modelsPath)
+            check("re-writing identical value settings leaves the file untouched",
+                  beforeRepeat == afterRepeat)
+
+            // Clearing one value key removes only that key.
+            try setPiOpenRouterRouting(key: OpenRouterRoutingKey.quantizations, value: nil, in: modelsPath)
+            try setPiOpenRouterRouting(key: OpenRouterRoutingKey.sort, value: "price", in: modelsPath)
+            let cleared = try policy(modelsPath)
+            check("clearing or changing one routing key leaves the others",
+                  cleared?["quantizations"] == nil && cleared?["sort"] as? String == "price"
+                      && cleared?["data_collection"] as? String == "deny"
+                      && cleared?["order"] as? [String] == ["a"])
+
+            // max_price: each price owns one entry, so hand-set siblings in the
+            // nested object survive every write, clear and reconcile.
+            try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"max_price":{"image":0.5,"completion":3}}}}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            var promptOnly = AppConfig()
+            promptOnly.maxPricePrompt = 1.5
+            try reconcilePiOpenRouterPolicy(promptOnly, in: modelsPath)
+            let priceReconciled = (try policy(modelsPath))?["max_price"] as? [String: Any]
+            check("reconcile adds max_price.prompt and keeps hand-set price entries",
+                  priceReconciled?["prompt"] as? Double == 1.5
+                      && priceReconciled?["image"] as? Double == 0.5
+                      && priceReconciled?["completion"] as? Double == 3)
+            try setPiOpenRouterRouting(key: OpenRouterRoutingKey.maxPricePrompt, value: nil, in: modelsPath)
+            let priceCleared = (try policy(modelsPath))?["max_price"] as? [String: Any]
+            check("clearing max_price.prompt removes only that entry",
+                  priceCleared?["prompt"] == nil && priceCleared?["image"] as? Double == 0.5
+                      && priceCleared?["completion"] as? Double == 3)
+            try #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"max_price":{"prompt":2}}}}}}"#
+                .write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try setPiOpenRouterRouting(key: OpenRouterRoutingKey.maxPricePrompt, value: nil, in: modelsPath)
+            let priceGone = try policy(modelsPath)
+            let rootAfterPrice = try piObject(modelsPath)
+            check("clearing the last max_price entry prunes max_price and the chain",
+                  priceGone == nil && rootAfterPrice?["providers"] == nil)
+
+            // Value keys: reconcile with everything off never removes a hand-set
+            // one, an identical write is byte-for-byte a no-op, and clearing the
+            // last one prunes the containers.
+            let compactValues = #"{"providers":{"openrouter":{"compat":{"openRouterRouting":{"data_collection":"deny","sort":"price","quantizations":["fp8"]}}}}}"#
+            try compactValues.write(toFile: modelsPath, atomically: true, encoding: .utf8)
+            try reconcilePiOpenRouterPolicy(AppConfig(), in: modelsPath)
+            let valuesKept = try ConfigFile.read(modelsPath)
+            check("reconcile with everything off keeps hand-set value keys byte-for-byte",
+                  valuesKept == compactValues)
+            try setPiOpenRouterRouting(key: "sort", value: "price", in: modelsPath)
+            try setPiOpenRouterPolicy(.denyDataCollection, enabled: true, in: modelsPath)
+            let valuesNoop = try ConfigFile.read(modelsPath)
+            check("writing an identical sort or data_collection leaves the file untouched",
+                  valuesNoop == compactValues)
+            try setPiOpenRouterPolicy(.denyDataCollection, enabled: false, in: modelsPath)
+            try setPiOpenRouterRouting(key: "sort", value: nil, in: modelsPath)
+            try setPiOpenRouterRouting(key: "quantizations", value: nil, in: modelsPath)
+            let valuesPruned = try piObject(modelsPath)
+            check("clearing the last value keys prunes the routing chain",
+                  valuesPruned?["providers"] == nil)
+            try setPiOpenRouterPolicy(.requireParameters, enabled: true, in: modelsPath)
+            let requireOn = try policy(modelsPath)
+            try setPiOpenRouterPolicy(.requireParameters, enabled: false, in: modelsPath)
+            let requireOff = try policy(modelsPath)
+            check("require_parameters turns on and back off",
+                  requireOn?["require_parameters"] as? Bool == true && requireOff == nil)
 
             // A fresh models.json created for the policy is owner-only.
             let freshPath = dir.appendingPathComponent("fresh-models.json").path
@@ -1108,6 +1209,9 @@ enum SelfTest {
             registry.keyStorage = .keychain
             registry.requireZDR = true
             registry.disallowFallbacks = true
+            registry.denyDataCollection = true; registry.requireParameters = true
+            registry.routingSort = "price"; registry.allowedQuantizations = ["fp8"]
+            registry.maxPricePrompt = 2; registry.maxPriceCompletion = 8.5
             try registry.save(to: settingsPath)
             let registryRound = AppConfig.load(from: settingsPath)
             check("added harnesses, provider-only and key storage round-trip",
@@ -1115,7 +1219,11 @@ enum SelfTest {
                       && registryRound.providerOnly == ["deepseek/deepseek-v4.1-flash": ["together"]]
                       && registryRound.keyStorage == .keychain)
             check("the OpenRouter routing policy round-trips",
-                  registryRound.requireZDR && registryRound.disallowFallbacks)
+                  registryRound.requireZDR && registryRound.disallowFallbacks
+                      && registryRound.denyDataCollection && registryRound.requireParameters
+                      && registryRound.routingSort == "price"
+                      && registryRound.allowedQuantizations == ["fp8"]
+                      && registryRound.maxPricePrompt == 2 && registryRound.maxPriceCompletion == 8.5)
 
             var fields = AppConfig.load(from: settingsPath)
             fields.showMoneyInMenuBar = false; fields.showIconInMenuBar = false
@@ -1141,6 +1249,9 @@ enum SelfTest {
                       && older.notifyBelowAmount == 7.5 && !older.launchAtLogin
                       && older.addedHarnesses.isEmpty && older.providerOnly.isEmpty
                       && !older.requireZDR && !older.disallowFallbacks
+                      && !older.denyDataCollection && !older.requireParameters
+                      && older.routingSort == nil && older.allowedQuantizations.isEmpty
+                      && older.maxPricePrompt == nil && older.maxPriceCompletion == nil
                       && older.apiKey == nil && older.keyStorage == .file)
 
             // A present-but-mistyped value must cost only its own field: without
@@ -1151,6 +1262,14 @@ enum SelfTest {
             let mistyped = AppConfig.load(from: settingsPath)
             check("a mistyped value falls back to its own default and keeps the rest",
                   mistyped.notifyBelowAmount == 5.0 && mistyped.refreshMinutes == 33)
+
+            try "{\"refreshMinutes\": 33, \"routingSort\": 5, \"allowedQuantizations\": \"x\", \"maxPricePrompt\": \"x\", \"denyDataCollection\": \"yes\", \"maxPriceCompletion\": 4}"
+                .write(toFile: settingsPath, atomically: true, encoding: .utf8)
+            let mistypedRouting = AppConfig.load(from: settingsPath)
+            check("mistyped routing fields each fall back alone and keep the rest",
+                  mistypedRouting.routingSort == nil && mistypedRouting.allowedQuantizations.isEmpty
+                      && mistypedRouting.maxPricePrompt == nil && !mistypedRouting.denyDataCollection
+                      && mistypedRouting.maxPriceCompletion == 4 && mistypedRouting.refreshMinutes == 33)
 
             let defaults = AppConfig.load(from: root + "/config-that-does-not-exist.json")
             check("defaults show the money and icon and leave alerts off",
