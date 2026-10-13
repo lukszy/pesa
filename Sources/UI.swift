@@ -919,37 +919,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Stores one global routing-policy flag and mirrors that flag alone into
-    /// pi's `models.json` at the provider level, so every OpenRouter model in
-    /// pi inherits it. A Settings toggle is a deliberate user action, so off
-    /// does remove the flag's key; the other flag's key is never touched.
+    /// Stores one boolean routing-policy flag; see `updateOpenRouterRouting`.
     func setOpenRouterPolicy(_ flag: OpenRouterPolicyFlag, enabled: Bool) {
-        switch flag {
-        case .requireZDR: config.requireZDR = enabled
-        case .disallowFallbacks: config.disallowFallbacks = enabled
-        }
+        updateOpenRouterRouting(key: flag.key) { $0.set(flag, enabled) }
+    }
+
+    /// Applies `change` to the stored config, then mirrors that one routing
+    /// key alone into pi's `models.json` at the provider level, so every
+    /// OpenRouter model in pi inherits it. A Settings control is a deliberate
+    /// user action, so clearing it does remove the key; other keys are never
+    /// touched.
+    func updateOpenRouterRouting(key: String, _ change: (inout AppConfig) -> Void) {
+        change(&config)
         guard piRoutingAvailable else {
             // pi is not installed: nothing to write, and no error to show.
             piPolicyError = nil
             return
         }
         do {
-            try setPiOpenRouterPolicy(flag, enabled: enabled, in: paths.piModels)
+            let value = openRouterRoutingValues(config)[key] ?? nil
+            try setPiOpenRouterRouting(key: key, value: value, in: paths.piModels)
             piPolicyError = nil
         } catch {
             piPolicyError = "Could not update pi's routing policy: \(describe(error))"
         }
     }
 
-    /// Re-pushes the stored policy's on flags into pi after discovery, so a
-    /// toggle write that failed, or one made before pi was installed, is
-    /// retried. Never removes a key (see `reconcilePiOpenRouterPolicy`).
+    /// Re-pushes the stored policy's on settings into pi after discovery, so a
+    /// write that failed, or one made before pi was installed, is retried.
+    /// Never removes a key (see `reconcilePiOpenRouterPolicy`).
     private func reconcileOpenRouterPolicyToPi() {
-        guard piRoutingAvailable, config.requireZDR || config.disallowFallbacks else { return }
+        guard piRoutingAvailable else { return }
         do {
-            try reconcilePiOpenRouterPolicy(requireZDR: config.requireZDR,
-                                            disallowFallbacks: config.disallowFallbacks,
-                                            in: paths.piModels)
+            try reconcilePiOpenRouterPolicy(config, in: paths.piModels)
             piPolicyError = nil
         } catch {
             piPolicyError = "Could not update pi's routing policy: \(describe(error))"
@@ -1861,6 +1863,40 @@ struct SettingsView: View {
                 settingToggle("No fallback providers",
                               subtitle: "Fail instead of trying another provider when the allowed ones are unavailable (provider.allow_fallbacks = false).",
                               isOn: policyBinding(.disallowFallbacks, \.disallowFallbacks))
+                settingToggle("Deny data collection",
+                              subtitle: "Skip providers that may store or train on your prompts (provider.data_collection = deny).",
+                              isOn: policyBinding(.denyDataCollection, \.denyDataCollection))
+                settingToggle("Require parameter support",
+                              subtitle: "Skip providers that ignore a parameter in the request, such as tools or response_format (provider.require_parameters).",
+                              isOn: policyBinding(.requireParameters, \.requireParameters))
+                Picker("Sort providers by", selection: Binding<String?>(
+                    get: { state.config.routingSort },
+                    set: { new in state.updateOpenRouterRouting(key: OpenRouterRoutingKey.sort) { $0.routingSort = new } })) {
+                    Text("Default").tag(String?.none)
+                    ForEach(openRouterSortOptions, id: \.self) { Text($0.capitalized).tag(String?.some($0)) }
+                }
+                DisclosureGroup("Allowed quantizations") {
+                    Text("Route only to endpoints serving one of the ticked precisions. None ticked means any.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(openRouterQuantizationOptions, id: \.self) { level in
+                        Toggle(level, isOn: Binding(
+                            get: { state.config.allowedQuantizations.contains(level) },
+                            set: { on in
+                                state.updateOpenRouterRouting(key: OpenRouterRoutingKey.quantizations) {
+                                    $0.allowedQuantizations.removeAll { $0 == level }
+                                    if on { $0.allowedQuantizations.append(level) }
+                                }
+                            }))
+                    }
+                }
+                TextField("Max prompt price ($ per 1M tokens)", value: Binding<Double?>(
+                    get: { state.config.maxPricePrompt },
+                    set: { new in state.updateOpenRouterRouting(key: OpenRouterRoutingKey.maxPricePrompt) { $0.maxPricePrompt = Self.validPrice(new) } }),
+                          format: .number, prompt: Text("No limit"))
+                TextField("Max completion price ($ per 1M tokens)", value: Binding<Double?>(
+                    get: { state.config.maxPriceCompletion },
+                    set: { new in state.updateOpenRouterRouting(key: OpenRouterRoutingKey.maxPriceCompletion) { $0.maxPriceCompletion = Self.validPrice(new) } }),
+                          format: .number, prompt: Text("No limit"))
                 if let error = state.piPolicyError {
                     Text(error).foregroundStyle(.red)
                 }
@@ -1873,6 +1909,13 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// A typed price only counts when finite and non-negative; anything else
+    /// clears the field, so the stored config never disagrees with the file.
+    private static func validPrice(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value >= 0 else { return nil }
+        return value
     }
 
     /// One toggle over a global routing policy flag: `AppState` stores it (the

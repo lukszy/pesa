@@ -42,10 +42,14 @@ known, and the tile shows the provider that served the last request (`via Togeth
 - **OpenRouter provider routing** — a live per-provider table (price, speed,
 ZDR, quantization, privacy links) and a per-model allow-list that Pesa writes
 into pi's `models.json` so pi routes through only those providers.
-- **Global routing policy** — two Settings toggles, **Require ZDR providers**
-  (`provider.zdr`) and **No fallback providers** (`provider.allow_fallbacks =
-  false`), written to pi's `models.json` at the OpenRouter provider level so
-  every OpenRouter model inherits them under its per-model allow-list.
+- **Global routing policy** — Settings controls for **Require ZDR providers**
+  (`provider.zdr`), **No fallback providers** (`provider.allow_fallbacks =
+  false`), **Deny data collection** (`provider.data_collection = deny`),
+  **Require parameter support** (`provider.require_parameters`), a **sort**
+  preference, an allowed-**quantizations** list and a **max price**
+  (`provider.max_price`), written to pi's `models.json` at the OpenRouter
+  provider level so every OpenRouter model inherits them under its per-model
+  allow-list. Each control owns one key; clearing it removes only that key.
 - **Low-balance alert** — opt-in local notification on a crossing below your
 threshold; the menu bar amount also turns orange while below it.
 - **No third-party dependencies** — built directly against AppKit and SwiftUI.

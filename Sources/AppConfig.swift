@@ -26,6 +26,16 @@ struct AppConfig: Codable {
     /// is absent from the request, so OpenRouter's defaults apply.
     var requireZDR: Bool = false
     var disallowFallbacks: Bool = false
+    /// `provider.data_collection = "deny"` and `provider.require_parameters`.
+    var denyDataCollection: Bool = false
+    var requireParameters: Bool = false
+    /// `provider.sort`; nil leaves OpenRouter's default (load-balanced by price).
+    var routingSort: String?
+    /// `provider.quantizations` allow-list; empty means any quantization.
+    var allowedQuantizations: [String] = []
+    /// `provider.max_price` per million tokens, USD; nil means no limit.
+    var maxPricePrompt: Double?
+    var maxPriceCompletion: Double?
     var showMoneyInMenuBar: Bool = true
     var showIconInMenuBar: Bool = true
     var hidesAmountInMenuBar: Bool = false
@@ -54,6 +64,12 @@ struct AppConfig: Codable {
         providerOnly = (try? c.decodeIfPresent([String: [String]].self, forKey: .providerOnly)) ?? [:]
         requireZDR = (try? c.decodeIfPresent(Bool.self, forKey: .requireZDR)) ?? false
         disallowFallbacks = (try? c.decodeIfPresent(Bool.self, forKey: .disallowFallbacks)) ?? false
+        denyDataCollection = (try? c.decodeIfPresent(Bool.self, forKey: .denyDataCollection)) ?? false
+        requireParameters = (try? c.decodeIfPresent(Bool.self, forKey: .requireParameters)) ?? false
+        routingSort = (try? c.decodeIfPresent(String.self, forKey: .routingSort)) ?? nil
+        allowedQuantizations = (try? c.decodeIfPresent([String].self, forKey: .allowedQuantizations)) ?? []
+        maxPricePrompt = (try? c.decodeIfPresent(Double.self, forKey: .maxPricePrompt)) ?? nil
+        maxPriceCompletion = (try? c.decodeIfPresent(Double.self, forKey: .maxPriceCompletion)) ?? nil
         showMoneyInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showMoneyInMenuBar)) ?? true
         showIconInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .showIconInMenuBar)) ?? true
         hidesAmountInMenuBar = (try? c.decodeIfPresent(Bool.self, forKey: .hidesAmountInMenuBar)) ?? false
@@ -63,6 +79,24 @@ struct AppConfig: Codable {
         // `String?` from `decodeIfPresent` is itself optional under `try?`, so it
         // is flattened explicitly rather than assigned as `String??`.
         apiKey = (try? c.decodeIfPresent(String.self, forKey: .apiKey)) ?? nil
+    }
+
+    func isOn(_ flag: OpenRouterPolicyFlag) -> Bool {
+        switch flag {
+        case .requireZDR: return requireZDR
+        case .disallowFallbacks: return disallowFallbacks
+        case .denyDataCollection: return denyDataCollection
+        case .requireParameters: return requireParameters
+        }
+    }
+
+    mutating func set(_ flag: OpenRouterPolicyFlag, _ on: Bool) {
+        switch flag {
+        case .requireZDR: requireZDR = on
+        case .disallowFallbacks: disallowFallbacks = on
+        case .denyDataCollection: denyDataCollection = on
+        case .requireParameters: requireParameters = on
+        }
     }
 
     /// Never throws: a missing or undecodable file is the defaults.
